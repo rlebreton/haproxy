@@ -73,7 +73,7 @@ struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
 	if (!ret) {
 		ret = LIST_NEXT(&shctx->avail, struct shared_block*, list);
 		if (ret->len && shctx->free_block)
-			shctx->free_block(ret, ret);
+			shctx->free_block(ret, ret, shctx->cb_data);
 		ret->len = 0;
 		ret->block_count = 0;
 		ret->last_append = NULL;
@@ -85,7 +85,7 @@ struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
 		/* release callback */
 		if (block != ret) {
 			if (block->len && shctx->free_block)
-				shctx->free_block(block, block);
+				shctx->free_block(block, block, shctx->cb_data);
 			block->len = 0;
 			block->block_count = 1;
 		}
