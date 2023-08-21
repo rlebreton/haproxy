@@ -45,14 +45,25 @@ struct shared_block {
 	unsigned char data[VAR_ARRAY];
 };
 
+struct shared_contexts {
+	unsigned int context_num;
+	unsigned int context_size;
+	unsigned char contexts[VAR_ARRAY];
+};
+
+struct shared_context;
+
+typedef void (*shctx_free_block_cb)(struct shared_context *shctx, struct shared_block *first, struct shared_block *block);
+
 struct shared_context {
 	__decl_thread(HA_SPINLOCK_T lock);
 	struct list avail;  /* list for active and free blocks */
 	struct list hot;     /* list for locked blocks */
 	unsigned int nbav;  /* number of available blocks */
+	unsigned int list_count;
 	unsigned int max_obj_size;   /* maximum object size (in bytes). */
-	void (*free_block)(struct shared_block *first, struct shared_block *block, void *data);
-	void *cb_data;
+	shctx_free_block_cb free_block;
+// 	void (*free_block)(struct shared_block *first, struct shared_block *block, void *data);
 	short int block_size;
 	unsigned char data[VAR_ARRAY];
 };

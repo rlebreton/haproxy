@@ -4196,7 +4196,7 @@ ssl_sock_initial_ctx(struct bind_conf *bind_conf)
 }
 
 
-static inline void sh_ssl_sess_free_blocks(struct shared_block *first, struct shared_block *block, void *data)
+static inline void sh_ssl_sess_free_blocks(struct shared_context *shctx, struct shared_block *first, struct shared_block *block)
 {
 	if (first == block) {
 		struct sh_ssl_sess_hdr *sh_ssl_sess = (struct sh_ssl_sess_hdr *)first->data;
@@ -5393,6 +5393,7 @@ int ssl_sock_prepare_bind_conf(struct bind_conf *bind_conf)
 	struct proxy *px = bind_conf->frontend;
 	int alloc_ctx;
 	int err;
+	struct shared_contexts *shctxs = NULL;
 
 	if (!(bind_conf->options & BC_O_USE_SSL)) {
 		if (bind_conf->default_ctx) {
@@ -5413,9 +5414,10 @@ int ssl_sock_prepare_bind_conf(struct bind_conf *bind_conf)
 		}
 	}
 	if (!ssl_shctx && global.tune.sslcachesize) {
-		alloc_ctx = shctx_init(&ssl_shctx, global.tune.sslcachesize,
+		alloc_ctx = shctx_init(&shctxs, global.tune.sslcachesize,
 		                       sizeof(struct sh_ssl_sess_hdr) + SHSESS_BLOCK_MIN_SIZE, -1,
-		                       sizeof(*sh_ssl_sess_tree), (global.nbthread > 1));
+		                       sizeof(*sh_ssl_sess_tree), (global.nbthread > 1), 1,
+				       sh_ssl_sess_free_blocks);
 		if (alloc_ctx <= 0) {
 			if (alloc_ctx == SHCTX_E_INIT_LOCK)
 				ha_alert("Unable to initialize the lock for the shared SSL session cache. You can retry using the global statement 'tune.ssl.force-private-cache' but it could increase CPU usage due to renegotiations if nbproc > 1.\n");
@@ -5423,8 +5425,9 @@ int ssl_sock_prepare_bind_conf(struct bind_conf *bind_conf)
 				ha_alert("Unable to allocate SSL session cache.\n");
 			return -1;
 		}
+		ssl_shctx = (struct shared_context*)shctxs->contexts;
 		/* free block callback */
-		ssl_shctx->free_block = sh_ssl_sess_free_blocks;
+// 		ssl_shctx->free_block = sh_ssl_sess_free_blocks;
 		/* init the root tree within the extra space */
 		sh_ssl_sess_tree = (void *)ssl_shctx + sizeof(struct shared_context);
 		*sh_ssl_sess_tree = EB_ROOT_UNIQUE;

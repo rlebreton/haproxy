@@ -73,7 +73,7 @@ struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
 	if (!ret) {
 		ret = LIST_NEXT(&shctx->avail, struct shared_block*, list);
 		if (ret->len && shctx->free_block)
-			shctx->free_block(ret, ret, shctx->cb_data);
+			shctx->free_block(shctx, ret, ret);
 		ret->len = 0;
 		ret->block_count = 0;
 		ret->last_append = NULL;
@@ -85,7 +85,7 @@ struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
 		/* release callback */
 		if (block != ret) {
 			if (block->len && shctx->free_block)
-				shctx->free_block(block, block, shctx->cb_data);
+				shctx->free_block(shctx, block, block);
 			block->len = 0;
 			block->block_count = 1;
 		}
@@ -268,14 +268,17 @@ int shctx_row_data_get(struct shared_context *shctx, struct shared_block *first,
  * Returns: -1 on alloc failure, <maxblocks> if it performs context alloc,
  * and 0 if cache is already allocated.
  */
-int shctx_init(struct shared_context **orig_shctx, int maxblocks, int blocksize,
-               unsigned int maxobjsz, int extra, int shared)
+int shctx_init(struct shared_contexts **shared_contexts, int maxblocks, int blocksize,
+               unsigned int maxobjsz, int extra, int shared, int numctx,
+               shctx_free_block_cb free_block)
 {
 	int i;
+	struct shared_contexts *shctxs;
 	struct shared_context *shctx;
 	int ret;
 	void *cur;
 	int maptype = MAP_PRIVATE;
+	size_t mapsize = 0;
 
 	if (maxblocks <= 0)
 		return 0;
@@ -289,27 +292,37 @@ int shctx_init(struct shared_context **orig_shctx, int maxblocks, int blocksize,
 		use_shared_mem = 1;
 	}
 
-	shctx = (struct shared_context *)mmap(NULL, sizeof(struct shared_context) + extra + (maxblocks * (sizeof(struct shared_block) + blocksize)),
-	                                      PROT_READ | PROT_WRITE, maptype | MAP_ANON, -1, 0);
-	if (!shctx || shctx == MAP_FAILED) {
-		shctx = NULL;
+	mapsize = sizeof(struct shared_contexts) + numctx * (sizeof(struct shared_context) + extra) + (maxblocks * (sizeof(struct shared_block) + blocksize));
+
+	shctxs = (struct shared_contexts *)mmap(NULL, mapsize, PROT_READ | PROT_WRITE,
+						maptype | MAP_ANON, -1, 0);
+	if (!shctxs || shctxs == MAP_FAILED) {
+		shctxs = NULL;
 		ret = SHCTX_E_ALLOC_CACHE;
 		goto err;
 	}
 
-	HA_SPIN_INIT(&shctx->lock);
-	shctx->nbav = 0;
+	shctxs->context_num = numctx;
+	shctxs->context_size = sizeof(struct shared_context) + extra;
 
-	LIST_INIT(&shctx->avail);
-	LIST_INIT(&shctx->hot);
+	for (i = 0; i < numctx; ++i) {
+		shctx = (struct shared_context *)(shctxs->contexts + i * shctxs->context_size);
+		HA_SPIN_INIT(&shctx->lock);
+		shctx->nbav = 0;
 
-	shctx->block_size = blocksize;
-	shctx->max_obj_size = maxobjsz == (unsigned int)-1 ? 0 : maxobjsz;
+		LIST_INIT(&shctx->avail);
+		LIST_INIT(&shctx->hot);
+		shctx->block_size = blocksize;
+		shctx->max_obj_size = maxobjsz == (unsigned int)-1 ? 0 : maxobjsz;
+
+		shctx->free_block = free_block;
+	}
 
 	/* init the free blocks after the shared context struct */
-	cur = (void *)shctx + sizeof(struct shared_context) + extra;
+	cur = shctxs->contexts + shctxs->context_num * shctxs->context_size;
 	for (i = 0; i < maxblocks; i++) {
 		struct shared_block *cur_block = (struct shared_block *)cur;
+		shctx = (struct shared_context *)(shctxs->contexts + (i*numctx/maxblocks) * shctxs->context_size);
 		cur_block->len = 0;
 		cur_block->refcount = 0;
 		cur_block->block_count = 1;
@@ -320,7 +333,7 @@ int shctx_init(struct shared_context **orig_shctx, int maxblocks, int blocksize,
 	ret = maxblocks;
 
 err:
-	*orig_shctx = shctx;
+	*shared_contexts = shctxs;
 	return ret;
 }
 

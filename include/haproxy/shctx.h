@@ -19,9 +19,9 @@
 #include <haproxy/shctx-t.h>
 #include <haproxy/thread.h>
 
-int shctx_init(struct shared_context **orig_shctx,
-               int maxblocks, int blocksize, unsigned int maxobjsz,
-               int extra, int shared);
+int shctx_init(struct shared_contexts **shared_contexts, int maxblocks, int blocksize,
+               unsigned int maxobjsz, int extra, int shared, int numctx,
+               shctx_free_block_cb free_block);
 struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
                                            struct shared_block *last, int data_len);
 void shctx_row_inc_hot(struct shared_context *shctx, struct shared_block *first);
