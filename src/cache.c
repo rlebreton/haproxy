@@ -2718,22 +2718,27 @@ static int cli_io_handler_show_cache(struct appctx *appctx)
 		unsigned int next_key;
 		struct cache_entry *entry;
 		unsigned int i;
+		struct shared_context *shctx = shctx_ptr(cache);
+
+		shctx_lock(shctx);
 
 		next_key = ctx->next_key;
 		if (!next_key) {
 			chunk_printf(&trash, "%p: %s (shctx:%p, available blocks:%d)\n", cache, cache->id, shctx_ptr(cache), shctx_ptr(cache)->nbav);
-			if (applet_putchk(appctx, &trash) == -1)
+			if (applet_putchk(appctx, &trash) == -1) {
+				shctx_unlock(shctx);
 				return 0;
+			}
 		}
+		shctx_unlock(shctx);
 
 		ctx->cache = cache;
 
-		while (1) {
+		cache_rdlock(cache);
 
-			cache_rdlock(cache);
+		while (1) {
 			node = eb32_lookup_ge(&cache->entries, next_key);
 			if (!node) {
-				cache_rdunlock(cache);
 				ctx->next_key = 0;
 				break;
 			}
@@ -2748,21 +2753,16 @@ static int cli_io_handler_show_cache(struct appctx *appctx)
 				chunk_appendf(&trash, " size:%u (%u blocks), refcount:%u, expire:%d\n",
 					      block_ptr(entry)->len, block_ptr(entry)->block_count,
 					      block_ptr(entry)->refcount, entry->expire - (int)date.tv_sec);
-			} else {
-				/* time to remove that one */
-				cache_wrlock(cache);
-				delete_entry(entry);
-				entry->eb.key = 0;
-				cache_wrunlock(cache);
 			}
 
 			ctx->next_key = next_key;
 
-			cache_rdunlock(cache);
-
-			if (applet_putchk(appctx, &trash) == -1)
+			if (applet_putchk(appctx, &trash) == -1) {
+				cache_rdunlock(cache);
 				return 0;
+			}
 		}
+		cache_rdunlock(cache);
 
 	}
 
