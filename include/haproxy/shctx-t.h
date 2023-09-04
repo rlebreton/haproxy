@@ -56,7 +56,7 @@ struct shared_context;
 typedef void (*shctx_free_block_cb)(struct shared_context *shctx, struct shared_block *first, struct shared_block *block);
 
 struct shared_context {
-	__decl_thread(HA_SPINLOCK_T lock);
+	__decl_thread(HA_RWLOCK_T lock);
 	struct list avail;  /* list for active and free blocks */
 	struct list hot;     /* list for locked blocks */
 	unsigned int nbav;  /* number of available blocks */
