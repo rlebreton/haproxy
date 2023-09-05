@@ -570,9 +570,9 @@ cache_store_strm_deinit(struct stream *s, struct filter *filter)
 	 * there too, in case of errors */
 	if (st && st->first_block) {
 		shctx = st->shctx;
-		shctx_wrlock(shctx);
+		shctx_wrlock_avail(shctx);
 		shctx_row_reattach(shctx, st->first_block);
-		shctx_wrunlock(shctx);
+		shctx_wrunlock_avail(shctx);
 	}
 	if (st) {
 		pool_free(pool_head_cache_st, st);
@@ -631,9 +631,9 @@ static inline void disable_cache_entry(struct cache_st *st,
 	eb32_delete(&object->eb);
 	object->eb.key = 0;
 	cache_wrunlock(cache);
-	shctx_wrlock(shctx);
+	shctx_wrlock_avail(shctx);
 	shctx_row_reattach(shctx, st->first_block);
-	shctx_wrunlock(shctx);
+	shctx_wrunlock_avail(shctx);
 	pool_free(pool_head_cache_st, st);
 }
 
@@ -705,13 +705,13 @@ cache_store_http_payload(struct stream *s, struct filter *filter, struct http_ms
 	}
 
   end:
-	shctx_wrlock(shctx);
+	shctx_wrlock_avail(shctx);
 	fb = shctx_row_reserve_hot(shctx, st->first_block, trash.data);
 	if (!fb) {
-		shctx_wrunlock(shctx);
+		shctx_wrunlock_avail(shctx);
 		goto no_cache;
 	}
-	shctx_wrunlock(shctx);
+	shctx_wrunlock_avail(shctx);
 
 	ret = shctx_row_data_append(shctx, st->first_block,
 				    (unsigned char *)b_head(&trash), b_data(&trash));
@@ -741,12 +741,12 @@ cache_store_http_end(struct stream *s, struct filter *filter,
 
 		object = (struct cache_entry *)st->first_block->data;
 
-		shctx_wrlock(shctx);
+		shctx_wrlock_avail(shctx);
 		/* The whole payload was cached, the entry can now be used. */
 		object->complete = 1;
 		/* remove from the hotlist */
 		shctx_row_reattach(shctx, st->first_block);
-		shctx_wrunlock(shctx);
+		shctx_wrunlock_avail(shctx);
 
 	}
 	if (st) {
@@ -1183,13 +1183,13 @@ enum act_return http_action_store_cache(struct act_rule *rule, struct proxy *px,
 	}
 	cache_wrunlock(cache);
 
-	shctx_wrlock(shctx);
+	shctx_wrlock_avail(shctx);
 	first = shctx_row_reserve_hot(shctx, NULL, sizeof(struct cache_entry));
 	if (!first) {
-		shctx_wrunlock(shctx);
+		shctx_wrunlock_avail(shctx);
 		goto out;
 	}
-	shctx_wrunlock(shctx);
+	shctx_wrunlock_avail(shctx);
 	/* the received memory is not initialized, we need at least to mark
 	 * the object as not indexed yet.
 	 */
@@ -1285,12 +1285,12 @@ enum act_return http_action_store_cache(struct act_rule *rule, struct proxy *px,
 		if (set_secondary_key_encoding(htx, object->secondary_key))
 		    goto out;
 
-	shctx_wrlock(shctx);
+	shctx_wrlock_avail(shctx);
 	if (!shctx_row_reserve_hot(shctx, first, trash.data)) {
-		shctx_wrunlock(shctx);
+		shctx_wrunlock_avail(shctx);
 		goto out;
 	}
-	shctx_wrunlock(shctx);
+	shctx_wrunlock_avail(shctx);
 
 	/* cache the headers in a http action because it allows to chose what
 	 * to cache, for example you might want to cache a response before
@@ -1323,9 +1323,9 @@ out:
 			object->eb.key = 0;
 		}
 		cache_wrunlock(cache);
-		shctx_wrlock(shctx);
+		shctx_wrlock_avail(shctx);
 		shctx_row_reattach(shctx, first);
-		shctx_wrunlock(shctx);
+		shctx_wrunlock_avail(shctx);
 	}
 
 	return ACT_RET_CONT;
@@ -1347,9 +1347,9 @@ static void http_cache_applet_release(struct appctx *appctx)
 
 	shctx = shctx_ptr(cache);
 
-	shctx_wrlock(shctx);
+	shctx_wrlock_avail(shctx);
 	shctx_row_reattach(shctx, first);
-	shctx_wrunlock(shctx);
+	shctx_wrunlock_avail(shctx);
 }
 
 
@@ -1873,7 +1873,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 
 	shctx = shctx_ptr(cache);
 
-	shctx_wrlock(shctx);
+	shctx_rdlock(shctx);
 	cache_rdlock(cache);
 	res = entry_exist(cache, s->txn->cache_hash, 0);
 	/* We must not use an entry that is not complete but the check will be
@@ -1882,28 +1882,32 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 	if (res) {
 		struct appctx *appctx;
 		entry_block = block_ptr(res);
+		shctx_wrlock_avail(shctx);
 		shctx_row_detach(shctx, entry_block);
+		shctx_wrunlock_avail(shctx);
 		cache_rdunlock(cache);
-		shctx_wrunlock(shctx);
+		shctx_rdunlock(shctx);
 
 		/* In case of Vary, we could have multiple entries with the same
 		 * primary hash. We need to calculate the secondary hash in order
 		 * to find the actual entry we want (if it exists). */
 		if (res->secondary_key_signature) {
 			if (!http_request_build_secondary_key(s, res->secondary_key_signature)) {
-				shctx_wrlock(shctx);
+				shctx_rdlock(shctx);
 				cache_rdlock(cache);
 				sec_entry = secondary_entry_exist(cache, res,
 								 s->txn->cache_secondary_hash, 0);
 				if (sec_entry && sec_entry != res) {
 					/* The wrong row was added to the hot list. */
+					shctx_wrlock_avail(shctx);
 					shctx_row_reattach(shctx, entry_block);
 					entry_block = block_ptr(sec_entry);
 					shctx_row_detach(shctx, entry_block);
+					shctx_wrunlock_avail(shctx);
 				}
 				res = sec_entry;
 				cache_rdunlock(cache);
-				shctx_wrunlock(shctx);
+				shctx_rdunlock(shctx);
 			}
 			else
 				res = NULL;
@@ -1914,9 +1918,9 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 		 * can't use the cache's entry and must forward the request to
 		 * the server. */
 		if (!res || !res->complete) {
-			shctx_wrlock(shctx);
+			shctx_wrlock_avail(shctx);
 			shctx_row_reattach(shctx, entry_block);
-			shctx_wrunlock(shctx);
+			shctx_wrunlock_avail(shctx);
 			return ACT_RET_CONT;
 		}
 
@@ -1940,14 +1944,14 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 			return ACT_RET_CONT;
 		} else {
 			s->target = NULL;
-			shctx_wrlock(shctx);
+			shctx_wrlock_avail(shctx);
 			shctx_row_reattach(shctx, entry_block);
-			shctx_wrunlock(shctx);
+			shctx_wrunlock_avail(shctx);
 			return ACT_RET_CONT;
 		}
 	}
 	cache_rdunlock(cache);
-	shctx_wrunlock(shctx);
+	shctx_rdunlock(shctx);
 
 	/* Shared context does not need to be locked while we calculate the
 	 * secondary hash. */
@@ -2722,17 +2726,17 @@ static int cli_io_handler_show_cache(struct appctx *appctx)
 		unsigned int i;
 		struct shared_context *shctx = shctx_ptr(cache);
 
-		shctx_wrlock(shctx);
+		shctx_rdlock(shctx);
 
 		next_key = ctx->next_key;
 		if (!next_key) {
 			chunk_printf(&trash, "%p: %s (shctx:%p, available blocks:%d)\n", cache, cache->id, shctx_ptr(cache), shctx_ptr(cache)->nbav);
 			if (applet_putchk(appctx, &trash) == -1) {
-				shctx_wrunlock(shctx);
+				shctx_rdunlock(shctx);
 				return 0;
 			}
 		}
-		shctx_wrunlock(shctx);
+		shctx_rdunlock(shctx);
 
 		ctx->cache = cache;
 

@@ -301,6 +301,7 @@ int shctx_init(struct shared_contexts **shared_contexts, int maxblocks, int bloc
 	for (i = 0; i < numctx; ++i) {
 		shctx = (struct shared_context *)(shctxs->contexts + i * shctxs->context_size);
 		HA_RWLOCK_INIT(&shctx->lock);
+		HA_RWLOCK_INIT(&shctx->avail_lock);
 		shctx->nbav = 0;
 
 		LIST_INIT(&shctx->avail);
