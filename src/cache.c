@@ -179,6 +179,7 @@ static inline void cache_wrunlock(struct cache *cache)
 struct cache_st {
 	struct shared_context *shctx;
 	struct shared_block *first_block;
+	struct list detached_head;
 };
 
 #define DEFAULT_MAX_SECONDARY_ENTRY 10
@@ -570,7 +571,7 @@ cache_store_strm_deinit(struct stream *s, struct filter *filter)
 	if (st && st->first_block) {
 		shctx = st->shctx;
 		shctx_wrlock(shctx);
-		shctx_row_dec_hot(shctx, st->first_block);
+		shctx_row_reattach(shctx, st->first_block);
 		shctx_wrunlock(shctx);
 	}
 	if (st) {
@@ -631,7 +632,7 @@ static inline void disable_cache_entry(struct cache_st *st,
 	object->eb.key = 0;
 	cache_wrunlock(cache);
 	shctx_wrlock(shctx);
-	shctx_row_dec_hot(shctx, st->first_block);
+	shctx_row_reattach(shctx, st->first_block);
 	shctx_wrunlock(shctx);
 	pool_free(pool_head_cache_st, st);
 }
@@ -744,7 +745,7 @@ cache_store_http_end(struct stream *s, struct filter *filter,
 		/* The whole payload was cached, the entry can now be used. */
 		object->complete = 1;
 		/* remove from the hotlist */
-		shctx_row_dec_hot(shctx, st->first_block);
+		shctx_row_reattach(shctx, st->first_block);
 		shctx_wrunlock(shctx);
 
 	}
@@ -1305,6 +1306,7 @@ enum act_return http_action_store_cache(struct act_rule *rule, struct proxy *px,
 	if (cache_ctx) {
 		cache_ctx->first_block = first;
 		cache_ctx->shctx = shctx;
+		LIST_INIT(&cache_ctx->detached_head);
 		/* store latest value and expiration time */
 		object->latest_validation = date.tv_sec;
 		object->expire = date.tv_sec + effective_maxage;
@@ -1322,7 +1324,7 @@ out:
 		}
 		cache_wrunlock(cache);
 		shctx_wrlock(shctx);
-		shctx_row_dec_hot(shctx, first);
+		shctx_row_reattach(shctx, first);
 		shctx_wrunlock(shctx);
 	}
 
@@ -1346,7 +1348,7 @@ static void http_cache_applet_release(struct appctx *appctx)
 	shctx = shctx_ptr(cache);
 
 	shctx_wrlock(shctx);
-	shctx_row_dec_hot(shctx, first);
+	shctx_row_reattach(shctx, first);
 	shctx_wrunlock(shctx);
 }
 
@@ -1880,7 +1882,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 	if (res) {
 		struct appctx *appctx;
 		entry_block = block_ptr(res);
-		shctx_row_inc_hot(shctx, entry_block);
+		shctx_row_detach(shctx, entry_block);
 		cache_rdunlock(cache);
 		shctx_wrunlock(shctx);
 
@@ -1895,9 +1897,9 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 								 s->txn->cache_secondary_hash, 0);
 				if (sec_entry && sec_entry != res) {
 					/* The wrong row was added to the hot list. */
-					shctx_row_dec_hot(shctx, entry_block);
+					shctx_row_reattach(shctx, entry_block);
 					entry_block = block_ptr(sec_entry);
-					shctx_row_inc_hot(shctx, entry_block);
+					shctx_row_detach(shctx, entry_block);
 				}
 				res = sec_entry;
 				cache_rdunlock(cache);
@@ -1913,7 +1915,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 		 * the server. */
 		if (!res || !res->complete) {
 			shctx_wrlock(shctx);
-			shctx_row_dec_hot(shctx, entry_block);
+			shctx_row_reattach(shctx, entry_block);
 			shctx_wrunlock(shctx);
 			return ACT_RET_CONT;
 		}
@@ -1939,7 +1941,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 		} else {
 			s->target = NULL;
 			shctx_wrlock(shctx);
-			shctx_row_dec_hot(shctx, entry_block);
+			shctx_row_reattach(shctx, entry_block);
 			shctx_wrunlock(shctx);
 			return ACT_RET_CONT;
 		}

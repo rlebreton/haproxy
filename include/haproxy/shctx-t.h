@@ -58,7 +58,7 @@ typedef void (*shctx_free_block_cb)(struct shared_context *shctx, struct shared_
 struct shared_context {
 	__decl_thread(HA_RWLOCK_T lock);
 	struct list avail;  /* list for active and free blocks */
-	struct list hot;     /* list for locked blocks */
+// 	struct list hot;     /* list for locked blocks */
 	unsigned int nbav;  /* number of available blocks */
 	unsigned int list_count;
 	unsigned int max_obj_size;   /* maximum object size (in bytes). */
