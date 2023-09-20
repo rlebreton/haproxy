@@ -649,6 +649,7 @@ cache_store_http_payload(struct stream *s, struct filter *filter, struct http_ms
 	struct htx_ret htxret;
 	unsigned int orig_len, to_forward;
 	int ret;
+	struct cache *cache = (struct cache*)shctx->data;
 
 	if (!len)
 		return len;
@@ -705,13 +706,17 @@ cache_store_http_payload(struct stream *s, struct filter *filter, struct http_ms
 	}
 
   end:
+
+	cache_wrlock(cache);
 	shctx_wrlock_avail(shctx);
 	fb = shctx_row_reserve_hot(shctx, st->first_block, trash.data);
 	if (!fb) {
 		shctx_wrunlock_avail(shctx);
+		cache_wrunlock(cache);
 		goto no_cache;
 	}
 	shctx_wrunlock_avail(shctx);
+	cache_wrunlock(cache);
 
 	ret = shctx_row_data_append(shctx, st->first_block,
 				    (unsigned char *)b_head(&trash), b_data(&trash));
@@ -903,16 +908,16 @@ int http_calc_maxage(struct stream *s, struct cache *cache, int *true_maxage)
 static void cache_free_blocks(struct shared_context *shctx, struct shared_block *first, struct shared_block *block)
 {
 	struct cache_entry *object = (struct cache_entry *)block->data;
-	struct cache *cache = (struct cache *)shctx->data;
+// 	struct cache *cache = (struct cache *)shctx->data;
+//
+// 	BUG_ON(!cache);
 
-	BUG_ON(!cache);
-
-	cache_wrlock(cache);
+// 	cache_wrlock(cache);
 	if (object->eb.key) {
 		delete_entry(object);
 		object->eb.key = 0;
 	}
-	cache_wrunlock(cache);
+// 	cache_wrunlock(cache);
 }
 
 
@@ -1181,15 +1186,17 @@ enum act_return http_action_store_cache(struct act_rule *rule, struct proxy *px,
 			old->eb.key = 0;
 		}
 	}
-	cache_wrunlock(cache);
 
 	shctx_wrlock_avail(shctx);
 	first = shctx_row_reserve_hot(shctx, NULL, sizeof(struct cache_entry));
 	if (!first) {
 		shctx_wrunlock_avail(shctx);
+		cache_wrunlock(cache);
 		goto out;
 	}
 	shctx_wrunlock_avail(shctx);
+	cache_wrunlock(cache);
+
 	/* the received memory is not initialized, we need at least to mark
 	 * the object as not indexed yet.
 	 */
@@ -1285,12 +1292,15 @@ enum act_return http_action_store_cache(struct act_rule *rule, struct proxy *px,
 		if (set_secondary_key_encoding(htx, object->secondary_key))
 		    goto out;
 
+	cache_wrlock(cache);
 	shctx_wrlock_avail(shctx);
 	if (!shctx_row_reserve_hot(shctx, first, trash.data)) {
 		shctx_wrunlock_avail(shctx);
+		cache_wrunlock(cache);
 		goto out;
 	}
 	shctx_wrunlock_avail(shctx);
+	cache_wrunlock(cache);
 
 	/* cache the headers in a http action because it allows to chose what
 	 * to cache, for example you might want to cache a response before
