@@ -1189,13 +1189,11 @@ enum act_return http_action_store_cache(struct act_rule *rule, struct proxy *px,
 
 	shctx_wrlock_avail(shctx);
 	first = shctx_row_reserve_hot(shctx, NULL, sizeof(struct cache_entry));
-	if (!first) {
-		shctx_wrunlock_avail(shctx);
-		cache_wrunlock(cache);
-		goto out;
-	}
 	shctx_wrunlock_avail(shctx);
 	cache_wrunlock(cache);
+	if (!first) {
+		goto out;
+	}
 
 	/* the received memory is not initialized, we need at least to mark
 	 * the object as not indexed yet.
@@ -1883,7 +1881,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 
 	shctx = shctx_ptr(cache);
 
-	shctx_rdlock(shctx);
+// 	shctx_rdlock(shctx);
 	cache_rdlock(cache);
 	res = entry_exist(cache, s->txn->cache_hash, 0);
 	/* We must not use an entry that is not complete but the check will be
@@ -1896,14 +1894,14 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 		shctx_row_detach(shctx, entry_block);
 		shctx_wrunlock_avail(shctx);
 		cache_rdunlock(cache);
-		shctx_rdunlock(shctx);
+// 		shctx_rdunlock(shctx);
 
 		/* In case of Vary, we could have multiple entries with the same
 		 * primary hash. We need to calculate the secondary hash in order
 		 * to find the actual entry we want (if it exists). */
 		if (res->secondary_key_signature) {
 			if (!http_request_build_secondary_key(s, res->secondary_key_signature)) {
-				shctx_rdlock(shctx);
+// 				shctx_rdlock(shctx);
 				cache_rdlock(cache);
 				sec_entry = secondary_entry_exist(cache, res,
 								 s->txn->cache_secondary_hash, 0);
@@ -1917,7 +1915,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 				}
 				res = sec_entry;
 				cache_rdunlock(cache);
-				shctx_rdunlock(shctx);
+// 				shctx_rdunlock(shctx);
 			}
 			else
 				res = NULL;
@@ -1961,7 +1959,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 		}
 	}
 	cache_rdunlock(cache);
-	shctx_rdunlock(shctx);
+// 	shctx_rdunlock(shctx);
 
 	/* Shared context does not need to be locked while we calculate the
 	 * secondary hash. */
