@@ -39,47 +39,15 @@ int shctx_row_data_get(struct shared_context *shctx, struct shared_block *first,
 
 extern int use_shared_mem;
 
-static inline void shctx_rdlock(struct shared_context *shctx)
-{
-       if (use_shared_mem)
-               HA_RWLOCK_RDLOCK(SHCTX_LOCK, &shctx->lock);
-}
-static inline void shctx_rdunlock(struct shared_context *shctx)
-{
-       if (use_shared_mem)
-              HA_RWLOCK_RDUNLOCK(SHCTX_LOCK, &shctx->lock);
-}
-static inline void shctx_wrlock(struct shared_context *shctx)
-{
-       if (use_shared_mem)
-               HA_RWLOCK_WRLOCK(SHCTX_LOCK, &shctx->lock);
-}
-static inline void shctx_wrunlock(struct shared_context *shctx)
-{
-       if (use_shared_mem)
-              HA_RWLOCK_WRUNLOCK(SHCTX_LOCK, &shctx->lock);
-}
+void shctx_rdlock(struct shared_context *shctx);
+void shctx_rdunlock(struct shared_context *shctx);
+void shctx_wrlock(struct shared_context *shctx);
+void shctx_wrunlock(struct shared_context *shctx);
 
-static inline void shctx_rdlock_avail(struct shared_context *shctx)
-{
-       if (use_shared_mem)
-               HA_RWLOCK_RDLOCK(SHCTX_LOCK, &shctx->avail_lock);
-}
-static inline void shctx_rdunlock_avail(struct shared_context *shctx)
-{
-       if (use_shared_mem)
-              HA_RWLOCK_RDUNLOCK(SHCTX_LOCK, &shctx->avail_lock);
-}
-static inline void shctx_wrlock_avail(struct shared_context *shctx)
-{
-       if (use_shared_mem)
-               HA_RWLOCK_WRLOCK(SHCTX_LOCK, &shctx->avail_lock);
-}
-static inline void shctx_wrunlock_avail(struct shared_context *shctx)
-{
-       if (use_shared_mem)
-              HA_RWLOCK_WRUNLOCK(SHCTX_LOCK, &shctx->avail_lock);
-}
+void shctx_rdlock_avail(struct shared_context *shctx);
+void shctx_rdunlock_avail(struct shared_context *shctx);
+void shctx_wrlock_avail(struct shared_context *shctx);
+void shctx_wrunlock_avail(struct shared_context *shctx);
 
 /* List Macros */
 

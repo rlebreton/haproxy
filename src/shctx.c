@@ -19,6 +19,66 @@
 
 int use_shared_mem = 0;
 
+FILE *debug_file = NULL;
+
+static unsigned int nbav_init = 0;
+
+__attribute__((noinline))
+void shctx_rdlock(struct shared_context *shctx)
+{
+       if (use_shared_mem)
+               HA_RWLOCK_RDLOCK(SHCTX_LOCK, &shctx->lock);
+}
+
+__attribute__((noinline))
+void shctx_rdunlock(struct shared_context *shctx)
+{
+       if (use_shared_mem)
+              HA_RWLOCK_RDUNLOCK(SHCTX_LOCK, &shctx->lock);
+}
+
+__attribute__((noinline))
+void shctx_wrlock(struct shared_context *shctx)
+{
+       if (use_shared_mem)
+               HA_RWLOCK_WRLOCK(SHCTX_LOCK, &shctx->lock);
+}
+
+__attribute__((noinline))
+void shctx_wrunlock(struct shared_context *shctx)
+{
+       if (use_shared_mem)
+              HA_RWLOCK_WRUNLOCK(SHCTX_LOCK, &shctx->lock);
+}
+
+__attribute__((noinline))
+void shctx_rdlock_avail(struct shared_context *shctx)
+{
+       if (use_shared_mem)
+               HA_RWLOCK_RDLOCK(SHCTX_LOCK, &shctx->avail_lock);
+}
+
+__attribute__((noinline))
+void shctx_rdunlock_avail(struct shared_context *shctx)
+{
+       if (use_shared_mem)
+              HA_RWLOCK_RDUNLOCK(SHCTX_LOCK, &shctx->avail_lock);
+}
+
+__attribute__((noinline))
+void shctx_wrlock_avail(struct shared_context *shctx)
+{
+       if (use_shared_mem)
+               HA_RWLOCK_WRLOCK(SHCTX_LOCK, &shctx->avail_lock);
+}
+
+__attribute__((noinline))
+void shctx_wrunlock_avail(struct shared_context *shctx)
+{
+       if (use_shared_mem)
+              HA_RWLOCK_WRUNLOCK(SHCTX_LOCK, &shctx->avail_lock);
+}
+
 /*
  * Reserve a new row if <first> is null, put it in the hotlist, set the refcount to 1
  * or append new blocks to the row with <first> as first block if non null.
@@ -125,6 +185,8 @@ out:
  */
 void shctx_row_detach(struct shared_context *shctx, struct shared_block *first)
 {
+
+	fprintf(debug_file, "shctx_row_detach (tid %d) len %d block_count %d\n", tid, first->len, first->block_count);
 	if (first->refcount <= 0) {
 
 		BUG_ON(!first->last_reserved);
@@ -150,6 +212,8 @@ void shctx_row_reattach(struct shared_context *shctx, struct shared_block *first
 {
 	first->refcount--;
 
+	fprintf(debug_file, "shctx_row_reattach (tid %d) len %d block_count %d data %p\n", tid, first->len, first->block_count, first->data);
+
 	if (first->refcount <= 0) {
 
 		BUG_ON(!first->last_reserved);
@@ -161,6 +225,8 @@ void shctx_row_reattach(struct shared_context *shctx, struct shared_block *first
 
 		shctx->nbav += first->block_count;
 	}
+
+// 	BUG_ON(shctx->nbav > nbav_init);
 }
 
 
@@ -285,6 +351,10 @@ int shctx_init(struct shared_contexts **shared_contexts, int maxblocks, int bloc
 	int maptype = MAP_PRIVATE;
 	size_t mapsize = 0;
 
+	if (!debug_file)
+		debug_file = fopen("/tmp/toto", "w");
+
+
 	if (maxblocks <= 0)
 		return 0;
 
@@ -337,6 +407,10 @@ int shctx_init(struct shared_contexts **shared_contexts, int maxblocks, int bloc
 		cur += sizeof(struct shared_block) + blocksize;
 	}
 	ret = maxblocks;
+
+	if (extra == 96) {
+		nbav_init = shctx->nbav;
+	}
 
 err:
 	*shared_contexts = shctxs;
