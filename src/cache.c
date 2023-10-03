@@ -2726,6 +2726,10 @@ static int cli_io_handler_show_cache(struct appctx *appctx)
 {
 	struct show_cache_ctx *ctx = appctx->svcctx;
 	struct cache* cache = ctx->cache;
+	struct buffer *trash = alloc_trash_chunk();
+
+	if (trash == NULL)
+		return 1;
 
 	list_for_each_entry_from(cache, &caches, list) {
 		struct eb32_node *node = NULL;
@@ -2738,10 +2742,10 @@ static int cli_io_handler_show_cache(struct appctx *appctx)
 
 		next_key = ctx->next_key;
 		if (!next_key) {
-			chunk_printf(&trash, "%p: %s (shctx:%p, available blocks:%d)\n", cache, cache->id, shctx_ptr(cache), shctx_ptr(cache)->nbav);
-			if (applet_putchk(appctx, &trash) == -1) {
+			chunk_printf(trash, "%p: %s (shctx:%p, available blocks:%d)\n", cache, cache->id, shctx_ptr(cache), shctx_ptr(cache)->nbav);
+			if (applet_putchk(appctx, trash) == -1) {
 				shctx_rdunlock(shctx);
-				return 0;
+				goto yield;
 			}
 		}
 		shctx_rdunlock(shctx);
@@ -2761,27 +2765,31 @@ static int cli_io_handler_show_cache(struct appctx *appctx)
 			next_key = node->key + 1;
 
 			if (entry->expire > date.tv_sec) {
-				chunk_printf(&trash, "%p hash:%u vary:0x", entry, read_u32(entry->hash));
+				chunk_printf(trash, "%p hash:%u vary:0x", entry, read_u32(entry->hash));
 				for (i = 0; i < HTTP_CACHE_SEC_KEY_LEN; ++i)
-					chunk_appendf(&trash, "%02x", (unsigned char)entry->secondary_key[i]);
-				chunk_appendf(&trash, " size:%u (%u blocks), refcount:%u, expire:%d\n",
+					chunk_appendf(trash, "%02x", (unsigned char)entry->secondary_key[i]);
+				chunk_appendf(trash, " size:%u (%u blocks), refcount:%u, expire:%d\n",
 					      block_ptr(entry)->len, block_ptr(entry)->block_count,
 					      block_ptr(entry)->refcount, entry->expire - (int)date.tv_sec);
 			}
 
 			ctx->next_key = next_key;
 
-			if (applet_putchk(appctx, &trash) == -1) {
+			if (applet_putchk(appctx, trash) == -1) {
 				cache_rdunlock(cache);
-				return 0;
+				goto yield;
 			}
 		}
 		cache_rdunlock(cache);
 
 	}
 
+	free_trash_chunk(trash);
 	return 1;
 
+yield:
+	free_trash_chunk(trash);
+	return 0;
 }
 
 
