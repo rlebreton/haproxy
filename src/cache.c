@@ -708,14 +708,14 @@ cache_store_http_payload(struct stream *s, struct filter *filter, struct http_ms
   end:
 
 	cache_wrlock(cache);
-	shctx_wrlock_avail(shctx);
+// 	shctx_wrlock_avail(shctx);
 	fb = shctx_row_reserve_hot(shctx, st->first_block, trash.data);
 	if (!fb) {
-		shctx_wrunlock_avail(shctx);
+// 		shctx_wrunlock_avail(shctx);
 		cache_wrunlock(cache);
 		goto no_cache;
 	}
-	shctx_wrunlock_avail(shctx);
+// 	shctx_wrunlock_avail(shctx);
 	cache_wrunlock(cache);
 
 	ret = shctx_row_data_append(shctx, st->first_block,
@@ -1187,9 +1187,9 @@ enum act_return http_action_store_cache(struct act_rule *rule, struct proxy *px,
 		}
 	}
 
-	shctx_wrlock_avail(shctx);
+// 	shctx_wrlock_avail(shctx);
 	first = shctx_row_reserve_hot(shctx, NULL, sizeof(struct cache_entry));
-	shctx_wrunlock_avail(shctx);
+// 	shctx_wrunlock_avail(shctx);
 	cache_wrunlock(cache);
 	if (!first) {
 		goto out;
@@ -1291,13 +1291,13 @@ enum act_return http_action_store_cache(struct act_rule *rule, struct proxy *px,
 		    goto out;
 
 	cache_wrlock(cache);
-	shctx_wrlock_avail(shctx);
+// 	shctx_wrlock_avail(shctx);
 	if (!shctx_row_reserve_hot(shctx, first, trash.data)) {
-		shctx_wrunlock_avail(shctx);
+// 		shctx_wrunlock_avail(shctx);
 		cache_wrunlock(cache);
 		goto out;
 	}
-	shctx_wrunlock_avail(shctx);
+// 	shctx_wrunlock_avail(shctx);
 	cache_wrunlock(cache);
 
 	/* cache the headers in a http action because it allows to chose what
