@@ -324,8 +324,7 @@ struct cache_entry *get_secondary_entry(struct cache *cache, struct cache_entry 
 		 * so we simply call eb32_delete. The secondary_entry count will
 		 * be updated when we try to insert a new entry to this list. */
 		if (entry->expire <= date.tv_sec && delete_expired) {
-			eb32_delete(&entry->eb);
-			entry->eb.key = 0;
+			release_entry(entry);
 		}
 
 		entry = node ? eb32_entry(node, struct cache_entry, eb) : NULL;
@@ -334,8 +333,7 @@ struct cache_entry *get_secondary_entry(struct cache *cache, struct cache_entry 
 	/* Expired entry */
 	if (entry && entry->expire <= date.tv_sec) {
 		if (delete_expired) {
-			eb32_delete(&entry->eb);
-			entry->eb.key = 0;
+			release_entry(entry);
 		}
 		entry = NULL;
 	}
@@ -360,8 +358,7 @@ static unsigned int clear_expired_duplicates(struct eb32_node **dup_tail)
 		entry = container_of(prev, struct cache_entry, eb);
 		prev = eb32_prev_dup(prev);
 		if (entry->expire <= date.tv_sec) {
-			eb32_delete(&entry->eb);
-			entry->eb.key = 0;
+			release_entry(entry);
 		}
 		else {
 			if (!tail)
@@ -419,8 +416,7 @@ static struct eb32_node *insert_entry(struct cache *cache, struct cache_entry *n
 			if (last_clear_ts == date.tv_sec) {
 				/* Too many entries for this primary key, clear the
 				 * one that was inserted. */
-				eb32_delete(node);
-				node->key = 0;
+				release_entry(entry);
 				return NULL;
 			}
 
@@ -430,8 +426,7 @@ static struct eb32_node *insert_entry(struct cache *cache, struct cache_entry *n
 				 * the newly inserted one. */
 				entry = container_of(prev, struct cache_entry, eb);
 				entry->last_clear_ts = date.tv_sec;
-				eb32_delete(node);
-				node->key = 0;
+				release_entry(entry);
 				return NULL;
 			}
 		}
@@ -653,8 +648,7 @@ static inline void disable_cache_entry(struct cache_st *st,
 	object = (struct cache_entry *)st->first_block->data;
 	filter->ctx = NULL; /* disable cache  */
 	cache_wrlock(cache);
-	eb32_delete(&object->eb);
-	object->eb.key = 0;
+	release_entry(object);
 	cache_wrunlock(cache);
 	shctx_wrlock_avail(shctx);
 	shctx_row_reattach(shctx, st->first_block);
@@ -1352,7 +1346,7 @@ out:
 		first->len = 0;
 		cache_wrlock(cache);
 		if (object->eb.key) {
-			delete_entry(object);
+			release_entry(object);
 		}
 		cache_wrunlock(cache);
 		shctx_wrlock_avail(shctx);
