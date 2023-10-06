@@ -64,7 +64,7 @@ struct cache {
 	__decl_thread(HA_RWLOCK_T lock);
 };
 
-__decl_thread(HA_SPINLOCK_T cache_cleanup_lock);
+static __decl_thread(HA_SPINLOCK_T cache_cleanup_lock);
 static struct list cache_cleanup_list = LIST_HEAD_INIT(cache_cleanup_list);
 
 /* the appctx context of a cache applet, stored in appctx->svcctx */
@@ -927,18 +927,34 @@ int http_calc_maxage(struct stream *s, struct cache *cache, int *true_maxage)
 static void cache_free_blocks(struct shared_context *shctx, struct shared_block *first, struct shared_block *block)
 {
 	struct cache_entry *object = (struct cache_entry *)block->data;
-	struct cache *cache = (struct cache *)shctx->data;
+// 	struct cache *cache = (struct cache *)shctx->data;
 //
 // 	BUG_ON(!cache);
 
-	cache_wrlock(cache);
 	if (object->eb.key) {
 		object->complete = 0;
-// 		HA_SPIN_LOCK(CACHE_LOCK, &cache_cleanup_lock);
-// 		LIST_INSERT(&cache_cleanup_list, object->cleanup_list);
-		release_entry(object);
-// 		HA_SPIN_UNLOCK(CACHE_LOCK, &cache_cleanup_lock);
+		HA_SPIN_LOCK(CACHE_LOCK, &cache_cleanup_lock);
+		retain_entry(object);
+		LIST_INSERT(&cache_cleanup_list, &object->cleanup_list);
+		HA_SPIN_UNLOCK(CACHE_LOCK, &cache_cleanup_lock);
 	}
+}
+
+static void cache_reserve_finish(struct shared_context *shctx)
+{
+	struct cache_entry *object, *back;
+	struct cache *cache = (struct cache *)shctx->data;
+
+	cache_wrlock(cache);
+
+	HA_SPIN_LOCK(CACHE_LOCK, &cache_cleanup_lock);
+
+	list_for_each_entry_safe(object, back, &cache_cleanup_list, cleanup_list) {
+		LIST_DELETE(&object->cleanup_list);
+		BUG_ON(object->refcount > 2);
+		delete_entry(object);
+	}
+	HA_SPIN_UNLOCK(CACHE_LOCK, &cache_cleanup_lock);
 	cache_wrunlock(cache);
 }
 
@@ -1903,7 +1919,6 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 
 	shctx = shctx_ptr(cache);
 
-// 	shctx_rdlock(shctx);
 	cache_rdlock(cache);
 	res = get_entry(cache, s->txn->cache_hash, 0);
 	/* We must not use an entry that is not complete but the check will be
@@ -1914,7 +1929,6 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 		int detached = 0;
 
 		retain_entry(res);
-		cache_rdunlock(cache);
 
 		entry_block = block_ptr(res);
 		shctx_wrlock_avail(shctx);
@@ -1926,7 +1940,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 			res = NULL;
 		}
 		shctx_wrunlock_avail(shctx);
-// 		shctx_rdunlock(shctx);
+		cache_rdunlock(cache);
 
 		/* In case of Vary, we could have multiple entries with the same
 		 * primary hash. We need to calculate the secondary hash in order
@@ -2279,7 +2293,7 @@ int post_check_cache()
 		ret_shctx = shctx_init(&shctxs, cache_config->maxblocks, CACHE_BLOCKSIZE,
 		                       cache_config->maxobjsz, sizeof(struct cache), 1,
 		                       cache_config->sub_caches,
-		                       cache_free_blocks);
+		                       cache_free_blocks, cache_reserve_finish);
 
 		if (ret_shctx <= 0) {
 			if (ret_shctx == SHCTX_E_INIT_LOCK)

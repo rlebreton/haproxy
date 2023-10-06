@@ -54,6 +54,7 @@ struct shared_contexts {
 struct shared_context;
 
 typedef void (*shctx_free_block_cb)(struct shared_context *shctx, struct shared_block *first, struct shared_block *block);
+typedef void (*shctx_reserve_finish_cb)(struct shared_context *shctx);
 
 struct shared_context {
 	__decl_thread(HA_RWLOCK_T lock);
@@ -64,6 +65,7 @@ struct shared_context {
 	unsigned int list_count;
 	unsigned int max_obj_size;   /* maximum object size (in bytes). */
 	shctx_free_block_cb free_block;
+	shctx_reserve_finish_cb reserve_finish;
 // 	void (*free_block)(struct shared_block *first, struct shared_block *block, void *data);
 	short int block_size;
 	unsigned char data[VAR_ARRAY];

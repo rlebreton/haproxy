@@ -65,12 +65,15 @@ struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
 	shctx_wrlock_avail(shctx);
 
 	/* not enough usable blocks */
-	if (data_len > shctx->nbav * shctx->block_size)
+	if (data_len > shctx->nbav * shctx->block_size) {
+		shctx_wrunlock_avail(shctx);
 		goto out;
+	}
 
 
 	if (data_len <= 0 || LIST_ISEMPTY(&shctx->avail)) {
 		ret = NULL;
+		shctx_wrunlock_avail(shctx);
 		goto out;
 	}
 
@@ -108,8 +111,12 @@ struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
 		}
 	}
 
-out:
 	shctx_wrunlock_avail(shctx);
+
+	if (shctx->reserve_finish)
+		shctx->reserve_finish(shctx);
+
+out:
 	return ret;
 }
 
@@ -268,7 +275,7 @@ int shctx_row_data_get(struct shared_context *shctx, struct shared_block *first,
  */
 int shctx_init(struct shared_contexts **shared_contexts, int maxblocks, int blocksize,
                unsigned int maxobjsz, int extra, int shared, int numctx,
-               shctx_free_block_cb free_block)
+               shctx_free_block_cb free_block, shctx_reserve_finish_cb reserve_finish)
 {
 	int i;
 	struct shared_contexts *shctxs;
@@ -314,6 +321,7 @@ int shctx_init(struct shared_contexts **shared_contexts, int maxblocks, int bloc
 		shctx->max_obj_size = maxobjsz == (unsigned int)-1 ? 0 : maxobjsz;
 
 		shctx->free_block = free_block;
+		shctx->reserve_finish = reserve_finish;
 	}
 
 	/* init the free blocks after the shared context struct */
