@@ -124,6 +124,8 @@ struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
 
 	shctx_wrlock_avail(shctx);
 
+	fprintf(debug_file, "reserve_hot START (tid %d)\n", tid);
+
 	/* not enough usable blocks */
 	if (data_len > shctx->nbav * shctx->block_size) {
 		shctx_wrunlock_avail(shctx);
@@ -171,6 +173,8 @@ struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
 		}
 	}
 
+	fprintf(debug_file, "reserve_hot END LOOP (tid %d)\n", tid);
+
 	shctx_wrunlock_avail(shctx);
 
 	if (shctx->reserve_finish)
@@ -186,7 +190,7 @@ out:
 void shctx_row_detach(struct shared_context *shctx, struct shared_block *first)
 {
 
-	fprintf(debug_file, "shctx_row_detach (tid %d) len %d block_count %d\n", tid, first->len, first->block_count);
+// 	fprintf(debug_file, "shctx_row_detach (tid %d) len %d block_count %d\n", tid, first->len, first->block_count);
 	if (first->refcount <= 0) {
 
 		BUG_ON(!first->last_reserved);
@@ -212,7 +216,7 @@ void shctx_row_reattach(struct shared_context *shctx, struct shared_block *first
 {
 	first->refcount--;
 
-	fprintf(debug_file, "shctx_row_reattach (tid %d) len %d block_count %d data %p\n", tid, first->len, first->block_count, first->data);
+// 	fprintf(debug_file, "shctx_row_reattach (tid %d) len %d block_count %d data %p\n", tid, first->len, first->block_count, first->data);
 
 	if (first->refcount <= 0) {
 
@@ -353,6 +357,7 @@ int shctx_init(struct shared_contexts **shared_contexts, int maxblocks, int bloc
 
 	if (!debug_file)
 		debug_file = fopen("/tmp/toto", "w");
+// 		debug_file = stderr;
 
 
 	if (maxblocks <= 0)
