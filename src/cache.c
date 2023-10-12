@@ -267,8 +267,8 @@ struct cache_entry *get_entry(struct cache *cache, char *hash, int delete_expire
 	if (entry->expire > date.tv_sec) {
 		return entry;
 	} else if (delete_expired) {
+		fprintf(debug_file, "get_entry delete %d (tid %d)", entry->eb.key, tid);
 		release_entry(entry);
-		//fprintf(debug_file, "get_entry delete %d", entry->eb.key);
 	}
 	return NULL;
 }
@@ -382,8 +382,6 @@ struct cache_entry *get_secondary_entry(struct cache *cache, struct cache_entry 
 	if (!entry->secondary_key_signature)
 		return NULL;
 
-	BUG_ON(1);
-
 	while (entry && secondary_key_cmp(entry->secondary_key, secondary_key) != 0) {
 		node = eb32_next_dup(node);
 
@@ -421,8 +419,6 @@ static unsigned int clear_expired_duplicates(struct eb32_node **dup_tail)
 	struct cache_entry *entry = NULL;
 	struct eb32_node *prev = *dup_tail;
 	struct eb32_node *tail = NULL;
-
-	BUG_ON(1);
 
 	while (prev) {
 		entry = container_of(prev, struct cache_entry, eb);
@@ -477,7 +473,6 @@ static struct eb32_node *insert_entry(struct cache *cache, struct cache_entry *n
 	if (!new_entry->secondary_key_signature)
 		return node;
 
-	BUG_ON(1);
 	prev = eb32_prev_dup(node);
 	if (prev != NULL) {
 
@@ -1028,7 +1023,7 @@ static void cache_free_blocks(struct shared_context *shctx, struct shared_block 
 {
 	struct cache_entry *object = (struct cache_entry *)block->data;
 
-	fprintf(debug_file, "cache_free_blocks (tid %d) len %d block_count %d\n", tid, first->len, first->block_count);
+// 	fprintf(debug_file, "cache_free_blocks (tid %d) len %d block_count %d\n", tid, first->len, first->block_count);
 
 // 	struct cache *cache = (struct cache *)shctx->data;
 //
@@ -2035,9 +2030,13 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 	shctx = shctx_ptr(cache);
 
 	cache_rdlock(cache);
-// 	check_cache(cache);
-	res = get_entry(cache, s->txn->cache_hash, 0);
+
+	fprintf(debug_file, "http_action_req_cache_use START (tid %u)\n", tid);
+
+
 	check_cache(cache);
+	res = get_entry(cache, s->txn->cache_hash, 0);
+// 	check_cache(cache);
 	/* We must not use an entry that is not complete but the check will be
 	 * performed after we look for a potential secondary entry (in case of
 	 * Vary). */
@@ -2104,8 +2103,10 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 		 * can't use the cache's entry and must forward the request to
 		 * the server. */
 		if (!res) {
+			fprintf(debug_file, "http_action_req_cache_use STOP (no res) (tid %u)\n", tid);
 			return ACT_RET_CONT;
 		} else if (!res->complete) {
+			fprintf(debug_file, "http_action_req_cache_use STOP (!res->complete) (tid %u)\n", tid);
 			cache_wrlock(cache);
 			release_entry(res);
 			cache_wrunlock(cache);
@@ -2132,6 +2133,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 				_HA_ATOMIC_INC(&px->fe_counters.p.http.cache_hits);
 			else
 				_HA_ATOMIC_INC(&px->be_counters.p.http.cache_hits);
+			fprintf(debug_file, "http_action_req_cache_use STOP (applet create) (tid %u)\n", tid);
 			return ACT_RET_CONT;
 		} else {
 			s->target = NULL;
@@ -2142,9 +2144,11 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 			shctx_row_reattach(shctx, entry_block);
 			check_avail_and_cache(shctx, cache);
 			shctx_wrunlock_avail(shctx);
+			fprintf(debug_file, "http_action_req_cache_use STOP (applet create failure) (tid %u)\n", tid);
 			return ACT_RET_CONT;
 		}
 	}
+	fprintf(debug_file, "http_action_req_cache_use STOP (no entry) (tid %u)\n", tid);
 	cache_rdunlock(cache);
 // 	shctx_rdunlock(shctx);
 
