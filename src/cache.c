@@ -162,28 +162,61 @@ static inline void check_avail_and_cache(struct shared_context *shctx, struct ca
 static inline void check_cache(struct cache* cache);
 static inline struct shared_context *shctx_ptr(struct cache *cache);
 
-static inline void cache_rdlock(struct cache *cache)
-{
-	HA_RWLOCK_RDLOCK(CACHE_LOCK, &cache->lock);
-// 	check_cache(cache);
-}
+static THREAD_LOCAL long long int rdtsc_count;
 
-static inline  void cache_rdunlock(struct cache *cache)
-{
-	HA_RWLOCK_RDUNLOCK(CACHE_LOCK, &cache->lock);
-}
+#define cache_rdlock(cache) ({ \
+	unsigned long long start; \
+	start = rdtsc(); \
+	HA_RWLOCK_RDLOCK(CACHE_LOCK, &cache->lock); \
+	rdtsc_count = rdtsc(); \
+	fprintf(debug_file, "cache_rdlock ticks %llu (tid %u) (%s:%u)\n", rdtsc() - start, tid, __FILE__, __LINE__); \
+			     })
 
-static inline void cache_wrlock(struct cache *cache)
-{
-	HA_RWLOCK_WRLOCK(CACHE_LOCK, &cache->lock);
-}
+#define cache_rdunlock(cache) ({ \
+	unsigned long long start; \
+	start = rdtsc(); \
+	fprintf(debug_file, "cache_rdunlock block ticks %llu (tid %u) (%s:%u)\n", rdtsc() - rdtsc_count, tid, __FILE__, __LINE__); \
+	HA_RWLOCK_RDUNLOCK(CACHE_LOCK, &cache->lock); \
+	fprintf(debug_file, "cache_rdunlock ticks %llu (tid %u) (%s:%u)\n", rdtsc() - start, tid, __FILE__, __LINE__); \
+			     })
 
-static inline void cache_wrunlock(struct cache *cache)
-{
-	check_avail_and_cache(shctx_ptr(cache), cache);
+#define cache_wrlock(cache) ({ \
+	unsigned long long start; \
+	start = rdtsc(); \
+	HA_RWLOCK_WRLOCK(CACHE_LOCK, &cache->lock); \
+	rdtsc_count = rdtsc(); \
+	fprintf(debug_file, "cache_wrlock ticks %llu (tid %u) (%s:%u)\n", rdtsc() - start, tid, __FILE__, __LINE__); \
+			     })
 
-	HA_RWLOCK_WRUNLOCK(CACHE_LOCK, &cache->lock);
-}
+#define cache_wrunlock(cache) ({ \
+	unsigned long long start; \
+	start = rdtsc(); \
+	fprintf(debug_file, "cache_wrunlock block ticks %llu (tid %u) (%s:%u)\n", rdtsc() - rdtsc_count, tid, __FILE__, __LINE__); \
+	HA_RWLOCK_WRUNLOCK(CACHE_LOCK, &cache->lock); \
+	fprintf(debug_file, "cache_wrunlock ticks %llu (tid %u) (%s:%u)\n", rdtsc() - start, tid, __FILE__, __LINE__); \
+			     })
+
+// static inline void cache_rdlock(struct cache *cache)
+// {
+// 	HA_RWLOCK_RDLOCK(CACHE_LOCK, &cache->lock);
+// }
+//
+// static inline  void cache_rdunlock(struct cache *cache)
+// {
+// 	HA_RWLOCK_RDUNLOCK(CACHE_LOCK, &cache->lock);
+// }
+//
+// static inline void cache_wrlock(struct cache *cache)
+// {
+// 	HA_RWLOCK_WRLOCK(CACHE_LOCK, &cache->lock);
+// }
+//
+// static inline void cache_wrunlock(struct cache *cache)
+// {
+// 	check_avail_and_cache(shctx_ptr(cache), cache);
+//
+// 	HA_RWLOCK_WRUNLOCK(CACHE_LOCK, &cache->lock);
+// }
 
 
 /*
@@ -321,6 +354,7 @@ static inline void check_avail_and_cache(struct shared_context *shctx, struct ca
 
 static inline void check_cache(struct cache *cache)
 {
+	return;
 
 	struct eb32_node *node = eb32_first(&cache->entries);
 // 	struct cache_entry *entry;
