@@ -61,6 +61,9 @@ struct cache {
 	__decl_thread(HA_RWLOCK_T lock);
 };
 
+static __decl_thread(HA_SPINLOCK_T cache_cleanup_lock);
+static struct list cache_cleanup_list = LIST_HEAD_INIT(cache_cleanup_list);
+
 /* the appctx context of a cache applet, stored in appctx->svcctx */
 struct cache_appctx {
 	struct cache_entry *entry;       /* Entry to be sent from cache. */
@@ -189,6 +192,8 @@ struct cache_entry {
 
 	struct eb32_node eb;     /* ebtree node used to hold the cache object */
 	char hash[20];
+
+	struct list cleanup_list;/* List used between the cache_free_blocks and cache_reserve_finish calls */
 
 	char secondary_key[HTTP_CACHE_SEC_KEY_LEN];  /* Optional secondary key. */
 	unsigned int secondary_key_signature;  /* Bitfield of the HTTP headers that should be used
@@ -926,14 +931,31 @@ int http_calc_maxage(struct stream *s, struct cache *cache, int *true_maxage)
 static void cache_free_blocks(struct shared_block *first, struct shared_block *block, void *data)
 {
 	struct cache_entry *object = (struct cache_entry *)block->data;
-	struct cache *cache = (struct cache *)data;
 
-	BUG_ON(!cache);
+	if (object->eb.key) {
+		object->complete = 0;
+		HA_SPIN_LOCK(CACHE_LOCK, &cache_cleanup_lock);
+		retain_entry(object);
+		LIST_INSERT(&cache_cleanup_list, &object->cleanup_list);
+		HA_SPIN_UNLOCK(CACHE_LOCK, &cache_cleanup_lock);
+	}
+}
+
+static void cache_reserve_finish(struct shared_context *shctx)
+{
+	struct cache_entry *object, *back;
+	struct cache *cache = (struct cache *)shctx->data;
 
 	cache_wrlock(cache);
-	if (object->eb.key) {
-		release_entry(object);
+
+	HA_SPIN_LOCK(CACHE_LOCK, &cache_cleanup_lock);
+
+	list_for_each_entry_safe(object, back, &cache_cleanup_list, cleanup_list) {
+		LIST_DELETE(&object->cleanup_list);
+		BUG_ON(object->refcount > 2);
+		delete_entry(object);
 	}
+	HA_SPIN_UNLOCK(CACHE_LOCK, &cache_cleanup_lock);
 	cache_wrunlock(cache);
 }
 
@@ -1336,6 +1358,8 @@ static void http_cache_applet_release(struct appctx *appctx)
 	struct cache *cache = cconf->c.cache;
 	struct shared_context *shctx = shctx_ptr(cache);
 	struct shared_block *first = block_ptr(cache_ptr);
+
+	release_entry(cache, cache_ptr, 1);
 
 	shctx_wrlock(shctx);
 	shctx_row_reattach(shctx, first);
@@ -1864,24 +1888,37 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 	 * Vary). */
 	if (res) {
 		struct appctx *appctx;
+		int detached = 0;
+
+		retain_entry(res);
+
 		entry_block = block_ptr(res);
 		shctx_wrlock(shctx);
-		shctx_row_detach(shctx, entry_block);
+		if (res->complete) {
+			shctx_row_detach(shctx, entry_block);
+			detached = 1;
+		} else {
+			release_entry(cache, res, 0);
+			res = NULL;
+		}
 		shctx_wrunlock(shctx);
 		cache_rdunlock(cache);
 
 		/* In case of Vary, we could have multiple entries with the same
 		 * primary hash. We need to calculate the secondary hash in order
 		 * to find the actual entry we want (if it exists). */
-		if (res->secondary_key_signature) {
+		if (res && res->secondary_key_signature) {
 			if (!http_request_build_secondary_key(s, res->secondary_key_signature)) {
 				cache_rdlock(cache);
 				sec_entry = get_secondary_entry(cache, res,
 				                                s->txn->cache_secondary_hash, 0);
 				if (sec_entry && sec_entry != res) {
 					/* The wrong row was added to the hot list. */
+					release_entry(cache, res, 0);
+					retain_entry(sec_entry);
 					shctx_wrlock(shctx);
-					shctx_row_reattach(shctx, entry_block);
+					if (detached)
+						shctx_row_reattach(shctx, entry_block);
 					entry_block = block_ptr(sec_entry);
 					shctx_row_detach(shctx, entry_block);
 					shctx_wrunlock(shctx);
@@ -1889,18 +1926,24 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 				res = sec_entry;
 				cache_rdunlock(cache);
 			}
-			else
+			else {
+				release_entry(cache, res, 1);
+
 				res = NULL;
+				shctx_wrlock(shctx);
+				shctx_row_reattach(shctx, entry_block);
+				shctx_wrunlock(shctx);
+			}
 		}
 
 		/* We either looked for a valid secondary entry and could not
 		 * find one, or the entry we want to use is not complete. We
 		 * can't use the cache's entry and must forward the request to
 		 * the server. */
-		if (!res || !res->complete) {
-			shctx_wrlock(shctx);
-			shctx_row_reattach(shctx, entry_block);
-			shctx_wrunlock(shctx);
+		if (!res) {
+			return ACT_RET_CONT;
+		} else if (!res->complete) {
+			release_entry(cache, res, 1);
 			return ACT_RET_CONT;
 		}
 
@@ -1923,6 +1966,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 			return ACT_RET_CONT;
 		} else {
 			s->target = NULL;
+			release_entry(cache, res, 1);
 			shctx_wrlock(shctx);
 			shctx_row_reattach(shctx, entry_block);
 			shctx_wrunlock(shctx);
@@ -2182,6 +2226,7 @@ int post_check_cache()
 			goto out;
 		}
 		shctx->free_block = cache_free_blocks;
+		shctx->reserve_finish = cache_reserve_finish;
 		shctx->cb_data = (void*)shctx->data;
 		/* the cache structure is stored in the shctx and added to the
 		 * caches list, we can remove the entry from the caches_config
