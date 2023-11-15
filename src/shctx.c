@@ -70,11 +70,9 @@ struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
 		return NULL;
 	}
 
-	if (!ret) {
+	/* Initialize the first block of a new row. */
+	if (!first) {
 		ret = LIST_NEXT(&shctx->avail, struct shared_block*, list);
-		if (ret->len && shctx->free_block)
-			shctx->free_block(ret, ret);
-		ret->len = 0;
 		ret->block_count = 0;
 		ret->last_append = NULL;
 		ret->refcount = 1;
@@ -83,12 +81,9 @@ struct shared_block *shctx_row_reserve_hot(struct shared_context *shctx,
 	list_for_each_entry_safe(block, sblock, &shctx->avail, list) {
 
 		/* release callback */
-		if (block != ret) {
-			if (block->len && shctx->free_block)
-				shctx->free_block(block, block);
-			block->len = 0;
-			block->block_count = 1;
-		}
+		if (block->len && shctx->free_block)
+			shctx->free_block(block, block);
+		block->len = 0;
 
 		if (last) {
 			shctx_block_append_hot(shctx, &last->list, block);
