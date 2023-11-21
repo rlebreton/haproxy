@@ -53,8 +53,8 @@ struct cache_tree {
 	struct eb_root entries;  /* head of cache entries based on keys */
 	__decl_thread(HA_RWLOCK_T lock);
 
-	struct list cleanup_list;
-	__decl_thread(HA_SPINLOCK_T cleanup_lock);
+	struct mt_list cleanup_list;
+// 	__decl_thread(HA_SPINLOCK_T cleanup_lock);
 } ALIGNED(64);
 
 struct cache {
@@ -199,7 +199,7 @@ struct cache_entry {
 	struct eb32_node eb;     /* ebtree node used to hold the cache object */
 	char hash[20];
 
-	struct list cleanup_list;/* List used between the cache_free_blocks and cache_reserve_finish calls */
+	struct mt_list cleanup_list;/* List used between the cache_free_blocks and cache_reserve_finish calls */
 
 	char secondary_key[HTTP_CACHE_SEC_KEY_LEN];  /* Optional secondary key. */
 	unsigned int secondary_key_signature;  /* Bitfield of the HTTP headers that should be used
@@ -1005,27 +1005,25 @@ static void cache_free_blocks(struct shared_block *first, void *data)
 		object->complete = 0;
 		cache_tree = &cache->trees[object->eb.key % CACHE_TREE_NUM];
 		retain_entry(object);
-		HA_SPIN_LOCK(CACHE_LOCK, &cache_tree->cleanup_lock);
-		LIST_INSERT(&cache_tree->cleanup_list, &object->cleanup_list);
-		HA_SPIN_UNLOCK(CACHE_LOCK, &cache_tree->cleanup_lock);
+		MT_LIST_APPEND(&cache_tree->cleanup_list, &object->cleanup_list);
 	}
 }
 
 static void cache_reserve_finish(struct shared_context *shctx)
 {
-	struct cache_entry *object, *back;
+	struct cache_entry *object;
 	struct cache *cache = (struct cache *)shctx->data;
 	struct cache_tree *cache_tree;
 	int cache_tree_idx = 0;
+	int count = 0;
 
 	for (; cache_tree_idx < CACHE_TREE_NUM; ++cache_tree_idx) {
 		cache_tree = &cache->trees[cache_tree_idx];
+		count = 0;
 
 		cache_wrlock(cache_tree);
-		HA_SPIN_LOCK(CACHE_LOCK, &cache_tree->cleanup_lock);
 
-		list_for_each_entry_safe(object, back, &cache_tree->cleanup_list, cleanup_list) {
-			LIST_DELETE(&object->cleanup_list);
+		while ((object = MT_LIST_POP(&cache_tree->cleanup_list, struct cache_entry *, cleanup_list))) {
 			/*
 			 * At this point we locked the cache tree in write mode
 			 * so no new thread could retain the current entry
@@ -1040,9 +1038,10 @@ static void cache_reserve_finish(struct shared_context *shctx)
 			 */
 			BUG_ON(object->refcount > 2);
 			delete_entry(object);
+			if (++count > 20)
+				break;
 		}
 
-		HA_SPIN_UNLOCK(CACHE_LOCK, &cache_tree->cleanup_lock);
 		cache_wrunlock(cache_tree);
 	}
 }
@@ -2338,8 +2337,7 @@ int post_check_cache()
 			cache->trees[i].entries = EB_ROOT;
 			HA_RWLOCK_INIT(&cache->trees[i].lock);
 
-			LIST_INIT(&cache->trees[i].cleanup_list);
-			HA_SPIN_INIT(&cache->trees[i].cleanup_lock);
+			MT_LIST_INIT(&cache->trees[i].cleanup_list);
 		}
 
 		/* Find all references for this cache in the existing filters
