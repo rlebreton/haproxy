@@ -412,8 +412,15 @@ void ssl_sock_free_ocsp(struct certificate_ocsp *ocsp)
 
 	HA_SPIN_LOCK(OCSP_LOCK, &ocsp_tree_lock);
 	ocsp->refcount_store--;
-	if (ocsp->refcount_store <= 0 && ocsp->refcount_instance <= 0) {
-		ssl_sock_free_ocsp_data(ocsp);
+	if (ocsp->refcount_store <= 0) {
+		eb64_delete(&ocsp->next_update);
+		/* Might happen if some ongoing requests kept using an SSL_CTX
+		 * that referenced this OCSP response after the corresponding
+		 * ckch_store was deleted or changed (via cli commands for
+		 * instance).
+		 */
+		if (ocsp->refcount <= 0)
+			ssl_sock_free_ocsp_data(ocsp);
 	}
 	HA_SPIN_UNLOCK(OCSP_LOCK, &ocsp_tree_lock);
 }
@@ -424,8 +431,8 @@ void ssl_sock_free_ocsp_instance(struct certificate_ocsp *ocsp)
 		return;
 
 	HA_SPIN_LOCK(OCSP_LOCK, &ocsp_tree_lock);
-	ocsp->refcount_instance--;
-	if (ocsp->refcount_instance <= 0) {
+	ocsp->refcount--;
+	if (ocsp->refcount <= 0) {
 		eb64_delete(&ocsp->next_update);
 		/* Might happen if some ongoing requests kept using an SSL_CTX
 		 * that referenced this OCSP response after the corresponding
@@ -936,7 +943,7 @@ static int ssl_ocsp_task_schedule()
 }
 REGISTER_POST_CHECK(ssl_ocsp_task_schedule);
 
-void ssl_sock_free_ocsp(struct certificate_ocsp *ocsp);
+void ssl_sock_free_ocsp_instance(struct certificate_ocsp *ocsp);
 
 void ssl_destroy_ocsp_update_task(void)
 {
@@ -958,7 +965,7 @@ void ssl_destroy_ocsp_update_task(void)
 	task_destroy(ocsp_update_task);
 	ocsp_update_task = NULL;
 
-	ssl_sock_free_ocsp(ssl_ocsp_task_ctx.cur_ocsp);
+	ssl_sock_free_ocsp_instance(ssl_ocsp_task_ctx.cur_ocsp);
 	ssl_ocsp_task_ctx.cur_ocsp = NULL;
 
 	if (ssl_ocsp_task_ctx.hc) {
@@ -1259,7 +1266,7 @@ static struct task *ssl_ocsp_update_responses(struct task *task, void *context, 
 		eb64_delete(&ocsp->next_update);
 
 		ocsp->updating = 1;
-		ocsp->refcount_instance++;
+		ocsp->refcount++;
 		ctx->cur_ocsp = ocsp;
 		ocsp->last_update_status = OCSP_UPDT_UNKNOWN;
 
@@ -1583,7 +1590,7 @@ static int cli_parse_show_ocspresponse(char **args, char *payload, struct appctx
 			HA_SPIN_UNLOCK(OCSP_LOCK, &ocsp_tree_lock);
 			return cli_err(appctx, "Certificate ID or path does not match any certificate.\n");
 		}
-		ocsp->refcount_instance++;
+		ocsp->refcount++;
 		HA_SPIN_UNLOCK(OCSP_LOCK, &ocsp_tree_lock);
 
 		ctx->ocsp = ocsp;
@@ -1684,7 +1691,7 @@ yield:
 	free_trash_chunk(tmp);
 	BIO_free(bio);
 
-	ocsp->refcount_instance++;
+	ocsp->refcount++;
 	ctx->ocsp = ocsp;
 	HA_SPIN_UNLOCK(OCSP_LOCK, &ocsp_tree_lock);
 	return 0;
@@ -1698,7 +1705,7 @@ static void cli_release_show_ocspresponse(struct appctx *appctx)
 	struct show_ocspresp_cli_ctx *ctx = appctx->svcctx;
 
 	if (ctx)
-		ssl_sock_free_ocsp(ctx->ocsp);
+		ssl_sock_free_ocsp_instance(ctx->ocsp);
 }
 
 /* Check if the ckch_store and the entry does have the same configuration */

@@ -48,7 +48,7 @@ struct certificate_ocsp {
 	unsigned char key_data[OCSP_MAX_CERTID_ASN1_LENGTH];
 	unsigned int key_length;
 	int refcount_store;		/* Number of ckch_store that reference this certificate_ocsp */
-	int refcount_instance;		/* Number of ckch_inst that reference this certificate_ocsp */
+	int refcount;			/* Number of actual references to this certificate_ocsp (SSL_CTXs mostly) */
 	struct buffer response;
 	long expire;
 	X509 *issuer;

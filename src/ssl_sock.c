@@ -1203,7 +1203,7 @@ static int ssl_sock_load_ocsp(const char *path, SSL_CTX *ctx, struct ckch_data *
 
 		cb_arg->is_single = 1;
 		cb_arg->s_ocsp = iocsp;
-		iocsp->refcount_instance++;
+		iocsp->refcount++;
 
 		pkey = X509_get_pubkey(x);
 		cb_arg->single_kt = EVP_PKEY_base_id(pkey);
@@ -1243,7 +1243,7 @@ static int ssl_sock_load_ocsp(const char *path, SSL_CTX *ctx, struct ckch_data *
 		index = ssl_sock_get_ocsp_arg_kt_index(key_type);
 		if (index >= 0 && !cb_arg->m_ocsp[index]) {
 			cb_arg->m_ocsp[index] = iocsp;
-			iocsp->refcount_instance++;
+			iocsp->refcount++;
 		}
 	}
 	HA_SPIN_UNLOCK(OCSP_LOCK, &ocsp_tree_lock);
