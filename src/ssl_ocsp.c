@@ -383,6 +383,25 @@ int ssl_sock_update_ocsp_response(struct buffer *ocsp_response, char **err)
 
 #if !defined OPENSSL_IS_BORINGSSL
 /*
+ * Must be called under ocsp_tree_lock lock.
+ */
+static void ssl_sock_free_ocsp_data(struct certificate_ocsp *ocsp)
+{
+	ebmb_delete(&ocsp->key);
+	eb64_delete(&ocsp->next_update);
+	X509_free(ocsp->issuer);
+	ocsp->issuer = NULL;
+	sk_X509_pop_free(ocsp->chain, X509_free);
+	ocsp->chain = NULL;
+	chunk_destroy(&ocsp->response);
+	if (ocsp->uri) {
+		ha_free(&ocsp->uri->area);
+		ha_free(&ocsp->uri);
+	}
+	free(ocsp);
+}
+
+/*
  * Decrease the refcount of the struct ocsp_response and frees it if it's not
  * used anymore. Also removes it from the tree if free'd.
  */
@@ -393,21 +412,8 @@ void ssl_sock_free_ocsp(struct certificate_ocsp *ocsp)
 
 	HA_SPIN_LOCK(OCSP_LOCK, &ocsp_tree_lock);
 	ocsp->refcount_store--;
-	if (ocsp->refcount_store <= 0) {
-		BUG_ON(ocsp->refcount_instance > 0);
-		ebmb_delete(&ocsp->key);
-		eb64_delete(&ocsp->next_update);
-		X509_free(ocsp->issuer);
-		ocsp->issuer = NULL;
-		sk_X509_pop_free(ocsp->chain, X509_free);
-		ocsp->chain = NULL;
-		chunk_destroy(&ocsp->response);
-		if (ocsp->uri) {
-			ha_free(&ocsp->uri->area);
-			ha_free(&ocsp->uri);
-		}
-
-		free(ocsp);
+	if (ocsp->refcount_store <= 0 && ocsp->refcount_instance <= 0) {
+		ssl_sock_free_ocsp_data(ocsp);
 	}
 	HA_SPIN_UNLOCK(OCSP_LOCK, &ocsp_tree_lock);
 }
@@ -421,6 +427,14 @@ void ssl_sock_free_ocsp_instance(struct certificate_ocsp *ocsp)
 	ocsp->refcount_instance--;
 	if (ocsp->refcount_instance <= 0) {
 		eb64_delete(&ocsp->next_update);
+		/* Might happen if some ongoing requests kept using an SSL_CTX
+		 * that referenced this OCSP response after the corresponding
+		 * ckch_store was deleted or changed (via cli commands for
+		 * instance).
+		 */
+		if (ocsp->refcount_store <= 0)
+			ssl_sock_free_ocsp_data(ocsp);
+
 	}
 	HA_SPIN_UNLOCK(OCSP_LOCK, &ocsp_tree_lock);
 }
