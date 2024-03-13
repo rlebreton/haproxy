@@ -16063,8 +16063,8 @@ ocsp-update [ off | on ] (crt-list only)
 
   Whenever an OCSP response is updated by the auto update task or following a
   call to the "update ssl ocsp-response" CLI command, a dedicated log line is
-  emitted. It follows a dedicated log-format that contains the following header
-  "%ci:%cp [%tr] %ft" and is followed by specific OCSP-related information:
+  emitted. It follows a dedicated format that contains the following header
+  "<OCSP-UPDATE>" and is followed by specific OCSP-related information:
     - the path of the corresponding frontend certificate
     - a numerical update status
     - a textual update status
