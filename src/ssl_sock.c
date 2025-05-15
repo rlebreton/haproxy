@@ -148,6 +148,7 @@ struct global_ssl global_ssl = {
 #ifdef HAVE_ACME
 	.acme_scheduler = 1,
 #endif
+	.renegotiate = SSL_RENEGOTIATE_DFLT,
 
 };
 
@@ -4532,6 +4533,14 @@ static int ssl_sock_prepare_srv_ssl_ctx(const struct server *srv, SSL_CTX *ctx)
 
 	if (srv->ssl_ctx.options & SRV_SSL_O_NO_TLS_TICKETS)
 		options |= SSL_OP_NO_TICKET;
+
+#ifdef SSL_OP_NO_RENEGOTIATION
+	if (srv->ssl_ctx.renegotiate == SSL_RENEGOTIATE_OFF)
+		options |= SSL_OP_NO_RENEGOTIATION;
+	else if (srv->ssl_ctx.renegotiate == SSL_RENEGOTIATE_ON)
+		options &= ~SSL_OP_NO_RENEGOTIATION;
+#endif
+
 	SSL_CTX_set_options(ctx, options);
 
 #ifdef SSL_MODE_ASYNC
@@ -5099,6 +5108,19 @@ static int ssl_sock_init(struct connection *conn, void **xprt_ctx)
 			goto err;
 
 		SSL_set_connect_state(ctx->ssl);
+
+#if defined(OPENSSL_IS_AWSLC) || defined(OPENSSL_IS_BORINGSSL)
+		if (srv->ssl_ctx.renegotiate == SSL_RENEGOTIATE_ON)
+			SSL_set_renegotiate_mode(ctx->ssl, ssl_renegotiate_freely);
+#elif !defined(SSL_OP_NO_RENEGOTIATION)
+		/* The SSL_OP_NO_RENEGOTIATION option was added in OpenSSL1.1.1,
+		 * before that the only way to disable renegotiation is to set
+		 * a flag by hand.
+		 */
+		if (srv->ssl_ctx.renegotiate == SSL_RENEGOTIATE_OFF)
+			ctx->ssl->s3->flags |= SSL3_FLAGS_NO_RENEGOTIATE_CIPHERS;
+#endif
+
 		HA_RWLOCK_RDLOCK(SSL_SERVER_LOCK, &srv->ssl_ctx.lock);
 		if (srv->ssl_ctx.reused_sess[tid].ptr) {
 			/* let's recreate a session from (ptr,size) and assign
