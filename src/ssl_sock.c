@@ -5112,13 +5112,6 @@ static int ssl_sock_init(struct connection *conn, void **xprt_ctx)
 #if defined(OPENSSL_IS_AWSLC) || defined(OPENSSL_IS_BORINGSSL)
 		if (srv->ssl_ctx.renegotiate == SSL_RENEGOTIATE_ON)
 			SSL_set_renegotiate_mode(ctx->ssl, ssl_renegotiate_freely);
-#elif !defined(SSL_OP_NO_RENEGOTIATION)
-		/* The SSL_OP_NO_RENEGOTIATION option was added in OpenSSL1.1.1,
-		 * before that the only way to disable renegotiation is to set
-		 * a flag by hand.
-		 */
-		if (srv->ssl_ctx.renegotiate == SSL_RENEGOTIATE_OFF)
-			ctx->ssl->s3->flags |= SSL3_FLAGS_NO_RENEGOTIATE_CIPHERS;
 #endif
 
 		HA_RWLOCK_RDLOCK(SSL_SERVER_LOCK, &srv->ssl_ctx.lock);

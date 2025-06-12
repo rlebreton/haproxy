@@ -1635,6 +1635,12 @@ static int srv_parse_renegotiate(char **args, int *cur_arg, struct proxy *px,
                                  struct server *newsrv, char **err)
 {
 
+#if !defined(OPENSSL_IS_AWSLC) && !defined(SSL_OP_NO_RENEGOTIATION)
+	memprintf(err, "'%s' not supported for your SSL library (%s), either SSL_OP_NO_RENEGOTIATION or SSL_set_renegotiate_mode must be defined.",
+	          args[0], OPENSSL_VERSION_TEXT);
+	return -1;
+#endif
+
 	if (strncmp(*args, "no-", 3) == 0)
 		newsrv->ssl_ctx.renegotiate = SSL_RENEGOTIATE_OFF;
 	else
@@ -2096,6 +2102,11 @@ static int ssl_parse_default_server_options(char **args, int section_type, struc
 			}
 		}
 		else if (strcmp(args[i], "renegotiate") == 0 || strcmp(args[i], "no-renegotiate") == 0) {
+#if !defined(OPENSSL_IS_AWSLC) && !defined(SSL_OP_NO_RENEGOTIATION)
+			memprintf(err, "'%s' not supported for your SSL library (%s), either SSL_OP_NO_RENEGOTIATION or SSL_set_renegotiate_mode must be defined.",
+				  args[i], OPENSSL_VERSION_TEXT);
+			return -1;
+#endif
 			global_ssl.renegotiate = (*args[i] == 'n') ? SSL_RENEGOTIATE_OFF : SSL_RENEGOTIATE_ON;
 		}
 		else if (parse_tls_method_options(args[i], &global_ssl.connect_default_sslmethods, err)) {
