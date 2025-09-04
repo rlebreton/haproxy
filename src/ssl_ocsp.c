@@ -943,6 +943,7 @@ enum {
 	OCSP_UPDT_ERR_HTTP_HDR = 3,
 	OCSP_UPDT_ERR_CHECK = 4,
 	OCSP_UPDT_ERR_INSERT = 5,
+	OCSP_UPDT_ERR_UNREACHABLE = 6,
 	OCSP_UPDT_ERR_LAST	/* Must be last */
 };
 
@@ -952,7 +953,8 @@ const struct ist ocsp_update_errors[] = {
 	[OCSP_UPDT_ERR_HTTP_STATUS] = IST("HTTP error"),
 	[OCSP_UPDT_ERR_HTTP_HDR] = IST("Missing \"ocsp-response\" header"),
 	[OCSP_UPDT_ERR_CHECK] = IST("OCSP response check failure"),
-	[OCSP_UPDT_ERR_INSERT] = IST("Error during insertion")
+	[OCSP_UPDT_ERR_INSERT] = IST("Error during insertion"),
+	[OCSP_UPDT_ERR_UNREACHABLE] = IST("OCSP responder unreachable")
 };
 
 static struct task *ssl_ocsp_update_responses(struct task *task, void *context, unsigned int state);
@@ -1276,21 +1278,28 @@ static struct task *ssl_ocsp_update_responses(struct task *task, void *context, 
 		/* we must close only if F_RES_END is the last flag */
 		if (ctx->flags & HC_OCSP_RES_END) {
 
+			/* When ocsp responder is unreachable, the stline
+			 * callback will not we called so we will end up here
+			 * without having any other flag than the F_RES_END one.
+			 */
+			if (!(ctx->flags & HC_OCSP_RES_BODY)) {
+				ctx->update_status = OCSP_UPDT_ERR_UNREACHABLE;
+				goto http_error;
+			}
+
 			/* Process the body that must be complete since
 			 * HC_OCSP_RES_END is set. */
-			if (ctx->flags & HC_OCSP_RES_BODY) {
-				if (ssl_ocsp_check_response(ocsp->chain, ocsp->issuer, &hc->res.buf, &err)) {
-					ctx->update_status = OCSP_UPDT_ERR_CHECK;
-					goto http_error;
-				}
-
-				if (ssl_sock_update_ocsp_response(&hc->res.buf, &err) != 0) {
-					ctx->update_status = OCSP_UPDT_ERR_INSERT;
-					goto http_error;
-				}
-
-				ctx->flags &= ~HC_OCSP_RES_BODY;
+			if (ssl_ocsp_check_response(ocsp->chain, ocsp->issuer, &hc->res.buf, &err)) {
+				ctx->update_status = OCSP_UPDT_ERR_CHECK;
+				goto http_error;
 			}
+
+			if (ssl_sock_update_ocsp_response(&hc->res.buf, &err) != 0) {
+				ctx->update_status = OCSP_UPDT_ERR_INSERT;
+				goto http_error;
+			}
+
+			ctx->flags &= ~HC_OCSP_RES_BODY;
 
 			ctx->flags &= ~HC_OCSP_RES_END;
 
