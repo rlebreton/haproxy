@@ -233,8 +233,7 @@ DECLARE_STATIC_TYPED_POOL(pool_head_cache_st, "cache_st", struct cache_st);
 
 static struct eb32_node *insert_entry(struct cache *cache, struct cache_tree *tree, struct cache_entry *new_entry);
 static void delete_entry(struct cache_entry *del_entry);
-static inline void release_entry_locked(struct cache_tree *cache, struct cache_entry *entry);
-static inline void release_entry_unlocked(struct cache_tree *cache, struct cache_entry *entry);
+static void release_entry(struct cache_tree *cache, struct cache_entry *entry);
 
 /*
  * Find a cache_entry in the <cache>'s tree that has the hash <hash>.
@@ -266,7 +265,7 @@ struct cache_entry *get_entry(struct cache_tree *cache_tree, char *hash, int del
 	if (entry->expire > date.tv_sec) {
 		return entry;
 	} else if (delete_expired) {
-		release_entry_locked(cache_tree, entry);
+		release_entry(cache_tree, entry);
 	}
 	return NULL;
 }
@@ -283,54 +282,37 @@ static void retain_entry(struct cache_entry *entry)
 /*
  * Decrement a cache_entry's reference counter and remove it from the <cache>'s
  * tree if the reference counter becomes 0.
- * If <needs_locking> is 0 then the cache lock was already taken by the caller,
- * otherwise it must be taken in write mode before actually deleting the entry.
+ * This function must be called under the cache lock in write mode.
  */
-static void release_entry(struct cache_tree *cache, struct cache_entry *entry, int needs_locking)
+static void release_entry(struct cache_tree *cache, struct cache_entry *entry)
+{
+	if (entry && HA_ATOMIC_SUB_FETCH(&entry->refcount, 1) <= 0)
+		delete_entry(entry);
+}
+
+/*
+ * Decrement a cache_entry's reference counter and remove it from the <cache>'s
+ * tree if the reference counter becomes 0.
+ */
+static void release_entry_locked(struct cache_tree *cache, struct cache_entry *entry)
 {
 	if (!entry)
 		return;
 
 	if (HA_ATOMIC_SUB_FETCH(&entry->refcount, 1) <= 0) {
-		if (needs_locking) {
-			cache_wrlock(cache);
-			/* The value might have changed between the last time we
-			 * checked it and now, we need to recheck it just in
-			 * case.
-			 */
-			if (HA_ATOMIC_LOAD(&entry->refcount) > 0) {
-				cache_wrunlock(cache);
-				return;
-			}
+		cache_wrlock(cache);
+		/* The value might have changed between the last time we
+		 * checked it and now, we need to recheck it just in
+		 * case.
+		 */
+		if (HA_ATOMIC_LOAD(&entry->refcount) > 0) {
+			cache_wrunlock(cache);
+			return;
 		}
 		delete_entry(entry);
-		if (needs_locking) {
-			cache_wrunlock(cache);
-		}
+		cache_wrunlock(cache);
 	}
 }
-
-/*
- * Decrement a cache_entry's reference counter and remove it from the <cache>'s
- * tree if the reference counter becomes 0.
- * This function must be called under the cache lock in write mode.
- */
-static inline void release_entry_locked(struct cache_tree *cache, struct cache_entry *entry)
-{
-	release_entry(cache, entry, 0);
-}
-
-/*
- * Decrement a cache_entry's reference counter and remove it from the <cache>'s
- * tree if the reference counter becomes 0.
- * This function must not be called under the cache lock or the shctx lock. The
- * cache lock might be taken in write mode (if the entry gets deleted).
- */
-static inline void release_entry_unlocked(struct cache_tree *cache, struct cache_entry *entry)
-{
-	release_entry(cache, entry, 1);
-}
-
 
 /*
  * Compare a newly built secondary key to the one found in a cache_entry.
@@ -389,7 +371,7 @@ struct cache_entry *get_secondary_entry(struct cache_tree *cache, struct cache_e
 		 * so we simply call eb32_delete. The secondary_entry count will
 		 * be updated when we try to insert a new entry to this list. */
 		if (entry->expire <= date.tv_sec && delete_expired) {
-			release_entry_locked(cache, entry);
+			release_entry(cache, entry);
 		}
 
 		entry = node ? eb32_entry(node, struct cache_entry, eb) : NULL;
@@ -398,7 +380,7 @@ struct cache_entry *get_secondary_entry(struct cache_tree *cache, struct cache_e
 	/* Expired entry */
 	if (entry && entry->expire <= date.tv_sec) {
 		if (delete_expired) {
-			release_entry_locked(cache, entry);
+			release_entry(cache, entry);
 		}
 		entry = NULL;
 	}
@@ -433,7 +415,7 @@ static unsigned int clear_expired_duplicates(struct cache_tree *cache, struct eb
 		entry = container_of(prev, struct cache_entry, eb);
 		prev = eb32_prev_dup(prev);
 		if (entry->expire <= date.tv_sec) {
-			release_entry_locked(cache, entry);
+			release_entry(cache, entry);
 		}
 		else {
 			if (!tail)
@@ -493,7 +475,7 @@ static struct eb32_node *insert_entry(struct cache *cache, struct cache_tree *tr
 			if (last_clear_ts == date.tv_sec) {
 				/* Too many entries for this primary key, clear the
 				 * one that was inserted. */
-				release_entry_locked(tree, new_entry);
+				release_entry(tree, new_entry);
 				return NULL;
 			}
 
@@ -503,7 +485,7 @@ static struct eb32_node *insert_entry(struct cache *cache, struct cache_tree *tr
 				 * the newly inserted one. */
 				entry = container_of(prev, struct cache_entry, eb);
 				entry->last_clear_ts = date.tv_sec;
-				release_entry_locked(tree, new_entry);
+				release_entry(tree, new_entry);
 				return NULL;
 			}
 		}
@@ -678,7 +660,7 @@ cache_store_strm_deinit(struct stream *s, struct filter *filter)
 			 * called. The stream must have been closed before we
 			 * could store the full answer in the cache.
 			 */
-			release_entry_unlocked(&cache->trees[object->eb.key % CACHE_TREE_NUM], object);
+			release_entry_locked(&cache->trees[object->eb.key % CACHE_TREE_NUM], object);
 		}
 		shctx_wrlock(shctx);
 		shctx_row_reattach(shctx, st->first_block);
@@ -737,7 +719,7 @@ static inline void disable_cache_entry(struct cache_st *st,
 
 	object = (struct cache_entry *)st->first_block->data;
 	filter->ctx = NULL; /* disable cache  */
-	release_entry_unlocked(&cache->trees[object->eb.key % CACHE_TREE_NUM], object);
+	release_entry_locked(&cache->trees[object->eb.key % CACHE_TREE_NUM], object);
 	shctx_wrlock(shctx);
 	shctx_row_reattach(shctx, st->first_block);
 	shctx_wrunlock(shctx);
@@ -1239,7 +1221,7 @@ enum act_return http_action_store_cache(struct act_rule *rule, struct proxy *px,
 
 				old = get_entry(cache_tree, txn->cache_hash, 1);
 				if (old)
-					release_entry_locked(cache_tree, old);
+					release_entry(cache_tree, old);
 				cache_wrunlock(cache_tree);
 			}
 		}
@@ -1312,7 +1294,7 @@ enum act_return http_action_store_cache(struct act_rule *rule, struct proxy *px,
 				cache_wrunlock(cache_tree);
 				goto out;
 			}
-			release_entry_locked(cache_tree, old);
+			release_entry(cache_tree, old);
 		}
 	}
 	cache_wrunlock(cache_tree);
@@ -1446,7 +1428,7 @@ out:
 	if (first) {
 		first->len = 0;
 		if (object->eb.key) {
-			release_entry_unlocked(cache_tree, object);
+			release_entry_locked(cache_tree, object);
 		}
 		shctx_wrlock(shctx);
 		shctx_row_reattach(shctx, first);
@@ -1469,7 +1451,7 @@ static void http_cache_applet_release(struct appctx *appctx)
 	struct shared_context *shctx = shctx_ptr(ctx->cache);
 	struct shared_block *first = block_ptr(cache_ptr);
 
-	release_entry(ctx->cache_tree, cache_ptr, 1);
+	release_entry_locked(ctx->cache_tree, cache_ptr);
 
 	shctx_wrlock(shctx);
 	shctx_row_reattach(shctx, first);
@@ -2161,7 +2143,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 			shctx_row_detach(shctx, entry_block);
 			detached = 1;
 		} else {
-			release_entry(cache_tree, res, 0);
+			release_entry(cache_tree, res);
 			res = NULL;
 		}
 		shctx_wrunlock(shctx);
@@ -2177,7 +2159,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 				                                s->txn->cache_secondary_hash, 0);
 				if (sec_entry && sec_entry != res) {
 					/* The wrong row was added to the hot list. */
-					release_entry(cache_tree, res, 0);
+					release_entry(cache_tree, res);
 					retain_entry(sec_entry);
 					shctx_wrlock(shctx);
 					if (detached)
@@ -2190,7 +2172,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 				cache_rdunlock(cache_tree);
 			}
 			else {
-				release_entry(cache_tree, res, 1);
+				release_entry_locked(cache_tree, res);
 
 				res = NULL;
 				shctx_wrlock(shctx);
@@ -2206,7 +2188,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 		if (!res) {
 			return ACT_RET_CONT;
 		} else if (!res->complete) {
-			release_entry(cache_tree, res, 1);
+			release_entry_locked(cache_tree, res);
 			return ACT_RET_CONT;
 		}
 
@@ -2232,7 +2214,7 @@ enum act_return http_action_req_cache_use(struct act_rule *rule, struct proxy *p
 			return ACT_RET_CONT;
 		} else {
 			s->target = NULL;
-			release_entry(cache_tree, res, 1);
+			release_entry_locked(cache_tree, res);
 			shctx_wrlock(shctx);
 			shctx_row_reattach(shctx, entry_block);
 			shctx_wrunlock(shctx);
