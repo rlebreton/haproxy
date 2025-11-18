@@ -299,12 +299,76 @@ static int check_aes(struct arg *args, struct sample_conv *conv,
 		_ret;					\
 	})
 
+static int aes_process(struct buffer *data, struct buffer *nonce, struct buffer *key, int key_size,
+                       struct buffer *aead_tag, struct buffer *aad, struct buffer *out, int decode, int gcm_mode)
+{
+	EVP_CIPHER_CTX *ctx = NULL;
+	int size;
+	int ret;
+
+	ctx = EVP_CIPHER_CTX_new();
+
+	if (!ctx)
+		goto err;
+
+	switch(key_size) {
+	case 128:
+		sample_conv_aes_init(decode, ctx, (gcm_mode ? EVP_aes_128_gcm() : EVP_aes_128_cbc()),
+				     NULL, NULL, NULL);
+		break;
+	case 192:
+		sample_conv_aes_init(decode, ctx, (gcm_mode ? EVP_aes_192_gcm() : EVP_aes_192_cbc()),
+				     NULL, NULL, NULL);
+		break;
+	case 256:
+		sample_conv_aes_init(decode, ctx, (gcm_mode ? EVP_aes_256_gcm() : EVP_aes_256_cbc()),
+				     NULL, NULL, NULL);
+		break;
+	}
+
+	EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, b_data(nonce), NULL);
+
+	/* Initialise IV and key */
+	if(!sample_conv_aes_init(decode, ctx, NULL, NULL, (unsigned char*)b_orig(key), (unsigned char*)b_orig(nonce)))
+		goto err;
+
+	if (aad && b_data(aad)) {
+		if (!sample_conv_aes_update(decode, ctx, NULL, (int*)&out->data, (unsigned char*)b_orig(aad), (int)b_data(aad)))
+			goto err;
+	}
+
+	if (!sample_conv_aes_update(decode, ctx, (unsigned char*)b_orig(out), (int*)&out->data, (unsigned char*)b_orig(data), (int)b_data(data)))
+		goto err;
+
+	size = out->data;
+
+	if (decode) {
+		EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, b_data(aead_tag), b_orig(aead_tag));
+	}
+
+	ret = sample_conv_aes_final(decode, ctx, (unsigned char*)out->area + out->data,
+	                            (int *)&out->data);
+	if (ret <= 0)
+		goto err;
+
+	if (!decode) {
+		EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, 16, b_orig(aead_tag));
+		aead_tag->data = 16;
+	}
+
+	EVP_CIPHER_CTX_free(ctx);
+	return size;
+
+err:
+	EVP_CIPHER_CTX_free(ctx);
+	return 0;
+}
+
 /* Arguments: AES size in bits, nonce, key, tag. The last three arguments are base64 encoded */
 static int sample_conv_aes(const struct arg *arg_p, struct sample *smp, void *private)
 {
 	struct sample nonce, key, aead_tag, aad;
-	struct buffer *smp_trash = NULL, *smp_trash_alloc = NULL, *aad_trash = NULL;
-	EVP_CIPHER_CTX *ctx = NULL;
+	struct buffer *smp_trash = NULL, *smp_trash_alloc = NULL, *nonce_trash = NULL, *key_trash = NULL, *aad_trash = NULL, *aead_tag_trash = NULL;
 	int size, ret, dec, gcm;
 
 	smp_trash_alloc = alloc_trash_chunk();
@@ -317,11 +381,6 @@ static int sample_conv_aes(const struct arg *arg_p, struct sample *smp, void *pr
 		smp_trash_alloc->data = smp_trash_alloc->size;
 	memcpy(smp_trash_alloc->area, smp->data.u.str.area, smp_trash_alloc->data);
 
-	ctx = EVP_CIPHER_CTX_new();
-
-	if (!ctx)
-		goto err;
-
 	smp_trash = alloc_trash_chunk();
 	if (!smp_trash)
 		goto err;
@@ -331,69 +390,36 @@ static int sample_conv_aes(const struct arg *arg_p, struct sample *smp, void *pr
 		goto err;
 
 	if (arg_p[1].type == ARGT_VAR) {
-		size = base64dec(nonce.data.u.str.area, nonce.data.u.str.data, smp_trash->area, smp_trash->size);
+		nonce_trash = alloc_trash_chunk();
+		if (!nonce_trash)
+			goto err;
+		size = base64dec(nonce.data.u.str.area, nonce.data.u.str.data, nonce_trash->area, nonce_trash->size);
 		if (size < 0)
 			goto err;
-		smp_trash->data = size;
-		nonce.data.u.str = *smp_trash;
+		nonce_trash->area[size] = '\0';
+		nonce_trash->data = size;
+		nonce.data.u.str = *nonce_trash;
 	}
 
 	/* encrypt (0) or decrypt (1) */
-	dec = (arg_p[0].type_flags & AES_FLG_DEC);
-	gcm = (arg_p[0].type_flags & AES_FLG_GCM);
-
-	if (gcm) {
-		/* aes_gcm case */
-		/* Set cipher type and mode */
-		switch(arg_p[0].data.sint) {
-		case 128:
-			sample_conv_aes_init(dec, ctx, EVP_aes_128_gcm(), NULL, NULL, NULL);
-			break;
-		case 192:
-			sample_conv_aes_init(dec, ctx, EVP_aes_192_gcm(), NULL, NULL, NULL);
-			break;
-		case 256:
-			sample_conv_aes_init(dec, ctx, EVP_aes_256_gcm(), NULL, NULL, NULL);
-			break;
-		}
-	}
-	else {
-		/* aes_cbc case */
-		/* Set cipher type and mode */
-		switch(arg_p[0].data.sint) {
-		case 128:
-			sample_conv_aes_init(dec, ctx, EVP_aes_128_cbc(), NULL, NULL, NULL);
-			break;
-		case 192:
-			sample_conv_aes_init(dec, ctx, EVP_aes_192_cbc(), NULL, NULL, NULL);
-			break;
-		case 256:
-			sample_conv_aes_init(dec, ctx, EVP_aes_256_cbc(), NULL, NULL, NULL);
-			break;
-		}
-	}
-
-	EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, nonce.data.u.str.data, NULL);
-
-	/* Initialise IV */
-	if(!sample_conv_aes_init(dec, ctx, NULL, NULL, NULL, (unsigned char *) nonce.data.u.str.area))
-		goto err;
+	dec = ((arg_p[0].type_flags & AES_FLG_DEC) != 0);
+	gcm = ((arg_p[0].type_flags & AES_FLG_GCM) != 0);
 
 	smp_set_owner(&key, smp->px, smp->sess, smp->strm, smp->opt);
 	if (!sample_conv_var2smp_str(&arg_p[2], &key))
 		goto err;
 
 	if (arg_p[2].type == ARGT_VAR) {
-		size = base64dec(key.data.u.str.area, key.data.u.str.data, smp_trash->area, smp_trash->size);
+		key_trash = alloc_trash_chunk();
+		if (!key_trash)
+			goto err;
+		size = base64dec(key.data.u.str.area, key.data.u.str.data, key_trash->area, key_trash->size);
 		if (size < 0)
 			goto err;
-		smp_trash->data = size;
-		key.data.u.str = *smp_trash;
+		key_trash->area[size] = '\0';
+		key_trash->data = size;
+		key.data.u.str = *key_trash;
 	}
-
-	/* Initialise key */
-	if (!sample_conv_aes_init(dec, ctx, NULL, NULL, (unsigned char *) key.data.u.str.area, NULL))
-		goto err;
 
 	/* if there's an AAD parameter */
 	if (arg_p[4].type) {
@@ -405,7 +431,6 @@ static int sample_conv_aes(const struct arg *arg_p, struct sample *smp, void *pr
 		if (arg_p[4].type == ARGT_VAR) {
 			int aad_len;
 
-
 			aad_trash = alloc_trash_chunk();
 			if (!aad_trash)
 				return 0;
@@ -413,18 +438,11 @@ static int sample_conv_aes(const struct arg *arg_p, struct sample *smp, void *pr
 			aad_len = base64dec(aad.data.u.str.area, aad.data.u.str.data, aad_trash->area, aad_trash->size);
 			if (aad_len < 0)
 				goto err;
+			aad_trash->area[aad_len] = '\0';
 			aad_trash->data = aad_len;
 			aad.data.u.str = *aad_trash;
 		}
-
-		if (!sample_conv_aes_update(dec, ctx, NULL, (int *)&smp_trash->data,
-		                                (unsigned char *)aad.data.u.str.area, (int)aad.data.u.str.data))
-			goto err;
 	}
-
-	if (!sample_conv_aes_update(dec, ctx, (unsigned char *) smp_trash->area, (int *) &smp_trash->data,
-	                                (unsigned char *) smp_trash_alloc->area, (int) smp_trash_alloc->data))
-		goto err;
 
 	smp_set_owner(&aead_tag, smp->px, smp->sess, smp->strm, smp->opt);
 	if (dec) {
@@ -432,29 +450,36 @@ static int sample_conv_aes(const struct arg *arg_p, struct sample *smp, void *pr
 			goto err;
 
 		if (arg_p[3].type == ARGT_VAR) {
-			size = base64dec(aead_tag.data.u.str.area, aead_tag.data.u.str.data, smp_trash_alloc->area,
-			                 smp_trash_alloc->size);
+
+			aead_tag_trash = alloc_trash_chunk();
+			if (!aead_tag_trash)
+				goto err;
+
+			size = base64dec(aead_tag.data.u.str.area, aead_tag.data.u.str.data, aead_tag_trash->area,
+			                 aead_tag_trash->size);
 			if (size < 0)
 				goto err;
-			smp_trash_alloc->data = size;
-			aead_tag.data.u.str = *smp_trash_alloc;
+			aead_tag_trash->data = size;
+			aead_tag.data.u.str = *aead_tag_trash;
 		}
 
-		EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, aead_tag.data.u.str.data,
-		                    (void *) aead_tag.data.u.str.area);
+	} else {
+		aead_tag_trash = alloc_trash_chunk();
+		if (!aead_tag_trash)
+			goto err;
 	}
 
-	size = smp_trash->data;
+	size = aes_process(smp_trash_alloc, &nonce.data.u.str, &key.data.u.str, arg_p[0].data.sint,
+	                   dec ? &aead_tag.data.u.str : aead_tag_trash,
+	                   arg_p[4].type ? &aad.data.u.str : NULL, smp_trash, dec, gcm);
 
-	ret = sample_conv_aes_final(dec, ctx, (unsigned char *) smp_trash->area + smp_trash->data,
-	                                (int *) &smp_trash->data);
-	if (ret <= 0)
+	if (!size)
 		goto err;
 
-	if (!dec) {
+	if (!dec && gcm) {
 		struct buffer *trash = get_trash_chunk();
 
-		EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, 16, (void *) trash->area);
+		chunk_memcpy(trash, b_orig(aead_tag_trash), b_data(aead_tag_trash));
 
 		aead_tag.data.u.str = *smp_trash_alloc;
 		ret = a2base64(trash->area, 16, aead_tag.data.u.str.area, aead_tag.data.u.str.size);
@@ -476,15 +501,19 @@ static int sample_conv_aes(const struct arg *arg_p, struct sample *smp, void *pr
 	smp_dup(smp);
 	free_trash_chunk(smp_trash_alloc);
 	free_trash_chunk(smp_trash);
+	free_trash_chunk(nonce_trash);
+	free_trash_chunk(key_trash);
 	free_trash_chunk(aad_trash);
-	EVP_CIPHER_CTX_free(ctx);
+	free_trash_chunk(aead_tag_trash);
 	return 1;
 
 err:
 	free_trash_chunk(smp_trash_alloc);
 	free_trash_chunk(smp_trash);
+	free_trash_chunk(nonce_trash);
+	free_trash_chunk(key_trash);
 	free_trash_chunk(aad_trash);
-	EVP_CIPHER_CTX_free(ctx);
+	free_trash_chunk(aead_tag_trash);
 	return 0;
 }
 #endif /* defined(EVP_CIPH_GCM_MODE) || defined(EVP_CIPH_CBC_MODE) */
