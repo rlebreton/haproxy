@@ -63,6 +63,18 @@ haproxy h1 -conf {
         http-request set-var(txn.decrypted4) var(txn.encrypted4),b64dec,aes_gcm_dec(128,txn.nonce,txn.key,txn.aead_tag3,txn.aad)
         http-after-response set-header X-Decrypted4 %[var(txn.decrypted4)]
 
+
+        http-request set-var(txn.cbc_plain) str("Hello from HAProxy AES-CBC")
+        http-request set-var(txn.cbc_nonce) str("MTIzNDU2Nzg5MDEy")
+        http-request set-var(txn.cbc_key) str("Zm9vb2Zvb29mb29vb29vbw==")
+
+        # AES-CBC enc wth vars + dec with strings
+        http-request set-var(txn.cbc_encrypted1) var(txn.cbc_plain),aes_cbc_enc(128,txn.cbc_nonce,txn.cbc_key,txn.cbc_aead_tag1),base64
+        http-after-response set-header X-CBC-Encrypted1 %[var(txn.cbc_encrypted1)]
+        http-after-response set-header X-CBC-AEAD-Tag1 %[var(txn.cbc_aead_tag1)]
+        http-request set-var(txn.cbc_decrypted1) var(txn.cbc_encrypted1),b64dec,aes_cbc_dec(128,"MTIzNDU2Nzg5MDEy","Zm9vb2Zvb29mb29vb29vbw==",txn.cbc_aead_tag1)
+        http-after-response set-header X-CBC-Decrypted1 %[var(txn.cbc_decrypted1)]
+
        default_backend be
 
     backend be
@@ -77,4 +89,6 @@ client c1 -connect ${h1_fe_sock} {
     expect resp.http.x-decrypted2 == "Hello from HAProxy AES-GCM"
     expect resp.http.x-decrypted3 == "Hello from HAProxy AES-GCM"
     expect resp.http.x-decrypted4 == "Hello from HAProxy AES-GCM"
+
+    expect resp.http.x-cbc-decrypted1 == "Hello from HAProxy AES-CBC"
 } -run
