@@ -1056,11 +1056,11 @@ end:
 }
 #endif
 
-static inline void clear_bignums(BIGNUM *nums[RSA_BIGNUM_COUNT])
+static inline void clear_bignums(BIGNUM **nums, int count)
 {
 	int idx = 0;
 
-	while (idx < RSA_BIGNUM_COUNT)
+	while (idx < count)
 		BN_free(nums[idx++]);
 }
 
@@ -1105,12 +1105,125 @@ static int build_RSA_PKEY_from_buf(struct buffer *jwk, EVP_PKEY **pkey)
 end:
 	/* The bignums are duplicated with OpenSSL3+ but not with the older API */
 #if HA_OPENSSL_VERSION_NUMBER >= 0x30000000L
-	clear_bignums(nums);
+	clear_bignums(nums, RSA_BIGNUM_COUNT);
 #else
 	if (retval)
-		clear_bignums(nums);
+		clear_bignums(nums, RSA_BIGNUM_COUNT);
 #endif
 
+	free_trash_chunk(tmpbuf);
+	if (retval) {
+		EVP_PKEY_free(*pkey);
+		*pkey = NULL;
+	}
+
+	return retval;
+}
+
+enum {
+	EC_BIGNUM_X,
+	EC_BIGNUM_Y,
+	EC_BIGNUM_D,
+
+	EC_BIGNUM_COUNT
+};
+
+static int do_build_EC_PKEY(struct buffer *curve, BIGNUM *nums[EC_BIGNUM_COUNT], EVP_PKEY **pkey)
+{
+	EC_POINT *pub = NULL;
+	EC_KEY *ec_key = NULL;
+	EC_GROUP *group = NULL;
+	BN_CTX *ctx = NULL;
+	int retval = 1;
+	int nid = 0;
+
+	if (chunk_strcmp(curve, "P-256") == 0) {
+		nid = NID_X9_62_prime256v1;
+	} else if (chunk_strcmp(curve, "P-384") == 0) {
+		nid = NID_secp384r1;
+	} else if (chunk_strcmp(curve, "P-521") == 0) {
+		nid = NID_secp521r1;
+	} else if (chunk_strcmp(curve, "secp256k1") == 0) {
+		nid = NID_secp256k1;
+	} else
+		goto end;
+
+	ec_key = EC_KEY_new_by_curve_name(nid);
+	if (!ec_key)
+		goto end;
+
+
+	if (EC_KEY_set_private_key(ec_key, nums[EC_BIGNUM_D]) < 0)
+		goto end;
+
+
+	group = (EC_GROUP *)EC_KEY_get0_group(ec_key);
+	if (!group)
+		goto end;
+
+	ctx = BN_CTX_new();
+	if (!ctx)
+		goto end;
+
+	pub = EC_POINT_new(group);
+	if (!pub)
+		goto end;
+
+	if (EC_POINT_set_affine_coordinates(group, pub, nums[EC_BIGNUM_X],
+					    nums[EC_BIGNUM_Y], ctx) < 0)
+		goto end;
+
+	if (EC_KEY_set_public_key(ec_key, pub) < 0)
+		goto end;
+
+	if (EC_KEY_check_key(ec_key) == 0)
+		goto end;
+
+	retval = 0;
+
+end:
+	BN_CTX_free(ctx);
+	EC_POINT_free(pub);
+	EC_KEY_free(ec_key);
+	return retval;
+}
+
+static int build_EC_PKEY_from_buf(struct buffer *jwk, EVP_PKEY **pkey)
+{
+	BIGNUM *nums[EC_BIGNUM_COUNT] = {};
+	int retval = 1;
+// 	int size = 0;
+	struct buffer *crv = NULL, *tmpbuf = NULL;
+
+	crv = alloc_trash_chunk();
+	if (!crv)
+		goto end;
+
+	tmpbuf = alloc_trash_chunk();
+	if (!tmpbuf)
+		goto end;
+
+	if (get_jwk_field(jwk, "$.x", tmpbuf) || (nums[EC_BIGNUM_X] = base64url_to_BIGNUM(tmpbuf)) == NULL)
+		goto end;
+	if (get_jwk_field(jwk, "$.y", tmpbuf) || (nums[EC_BIGNUM_Y] = base64url_to_BIGNUM(tmpbuf)) == NULL)
+		goto end;
+	if (get_jwk_field(jwk, "$.d", tmpbuf) || (nums[EC_BIGNUM_D] = base64url_to_BIGNUM(tmpbuf)) == NULL)
+		goto end;
+
+	if (get_jwk_field(jwk, "$.crv", crv))
+		goto end;
+
+	retval = do_build_EC_PKEY(crv, nums, pkey);
+
+end:
+#if HA_OPENSSL_VERSION_NUMBER > 0x30000000L
+	clear_bignums(nums, EC_BIGNUM_COUNT);
+#else
+	if (retval)
+		clear_bignums(nums, EC_BIGNUM_COUNT);
+#endif
+
+	free_trash_chunk(crv);
 	free_trash_chunk(tmpbuf);
 	if (retval) {
 		EVP_PKEY_free(*pkey);
