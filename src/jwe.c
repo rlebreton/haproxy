@@ -1129,6 +1129,45 @@ enum {
 };
 
 static int do_build_EC_PKEY(struct buffer *curve, BIGNUM *nums[EC_BIGNUM_COUNT], EVP_PKEY **pkey)
+#if HA_OPENSSL_VERSION_NUMBER >= 0x30000000L
+{
+	int retval = 1;
+	OSSL_PARAM *params = NULL;
+	OSSL_PARAM_BLD *param_bld = NULL;
+	EVP_PKEY_CTX *pctx = NULL;
+
+	param_bld = OSSL_PARAM_BLD_new();
+
+	if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME,
+					     b_orig(curve), b_data(curve)) ||
+	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_EC_PUB_X, nums[EC_BIGNUM_X]) ||
+	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_EC_PUB_Y, nums[EC_BIGNUM_Y]) ||
+	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, nums[EC_BIGNUM_D]))
+		goto end;
+
+	params = OSSL_PARAM_BLD_to_param(param_bld);
+
+	if (!params)
+		goto end;
+
+	pctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+	if (!pctx)
+		goto end;
+	if (EVP_PKEY_fromdata_init(pctx) != 1)
+		goto end;
+
+	if (EVP_PKEY_fromdata(pctx, pkey, EVP_PKEY_KEYPAIR, params) != 1)
+		goto end;
+
+	retval = 0;
+end:
+	OSSL_PARAM_BLD_free(param_bld);
+	OSSL_PARAM_free(params);
+	EVP_PKEY_CTX_free(pctx);
+
+	return retval;
+}
+#else
 {
 	EC_POINT *pub = NULL;
 	EC_KEY *ec_key = NULL;
@@ -1187,6 +1226,7 @@ end:
 	EC_KEY_free(ec_key);
 	return retval;
 }
+#endif
 
 static int build_EC_PKEY_from_buf(struct buffer *jwk, EVP_PKEY **pkey)
 {
