@@ -1128,45 +1128,161 @@ enum {
 	EC_BIGNUM_COUNT
 };
 
-static int do_build_EC_PKEY(struct buffer *curve, BIGNUM *nums[EC_BIGNUM_COUNT], EVP_PKEY **pkey)
+static int do_build_EC_PKEY(struct buffer *curve, struct buffer *privkey, BIGNUM *nums[EC_BIGNUM_COUNT], EVP_PKEY **pkey)
 #if HA_OPENSSL_VERSION_NUMBER >= 0x30000000L
 {
+	EC_POINT *ec_point = NULL;
 	int retval = 1;
+	struct buffer *pubkey = alloc_trash_chunk();
+// 	int size = 0;
+	EC_GROUP *group = NULL;
+	int nid = 0;
+	BN_CTX *bnctx = NULL;
+
 	OSSL_PARAM *params = NULL;
 	OSSL_PARAM_BLD *param_bld = NULL;
 	EVP_PKEY_CTX *pctx = NULL;
 
-	param_bld = OSSL_PARAM_BLD_new();
 
-	if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME,
-					     b_orig(curve), b_data(curve)) ||
-	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_EC_PUB_X, nums[EC_BIGNUM_X]) ||
-	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_EC_PUB_Y, nums[EC_BIGNUM_Y]) ||
-	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, nums[EC_BIGNUM_D]))
+	if (chunk_strcmp(curve, "P-256") == 0) {
+		nid = NID_X9_62_prime256v1;
+	} else if (chunk_strcmp(curve, "P-384") == 0) {
+		nid = NID_secp384r1;
+	} else if (chunk_strcmp(curve, "P-521") == 0) {
+		nid = NID_secp521r1;
+	} else if (chunk_strcmp(curve, "secp256k1") == 0) {
+		nid = NID_secp256k1;
+	} else
 		goto end;
 
-	params = OSSL_PARAM_BLD_to_param(param_bld);
-
-	if (!params)
+	if (!pubkey)
 		goto end;
 
-	pctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
-	if (!pctx)
-		goto end;
-	if (EVP_PKEY_fromdata_init(pctx) != 1)
+	group = EC_GROUP_new_by_curve_name(nid);
+	if (!group)
 		goto end;
 
-	if (EVP_PKEY_fromdata(pctx, pkey, EVP_PKEY_KEYPAIR, params) != 1)
+	bnctx = BN_CTX_new();
+	if (!bnctx)
 		goto end;
+
+	ec_point = EC_POINT_new(group);
+	if (!ec_point)
+		goto end;
+
+	if (EC_POINT_set_affine_coordinates(group, ec_point, nums[EC_BIGNUM_X],
+					    nums[EC_BIGNUM_Y], bnctx) < 0)
+		goto end;
+
+	pubkey->data = EC_POINT_point2buf(group, ec_point,
+				  POINT_CONVERSION_UNCOMPRESSED, (unsigned char**)&pubkey->area, bnctx);
+
+	if (pubkey->data == 0)
+		goto end;
+
+
+	{
+		param_bld = OSSL_PARAM_BLD_new();
+
+		if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME,
+						     b_orig(curve), b_data(curve)) ||
+		    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, nums[EC_BIGNUM_D]) ||
+		    !OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PUB_KEY,
+						      pubkey->area, pubkey->data))
+			goto end;
+
+		params = OSSL_PARAM_BLD_to_param(param_bld);
+
+		if (!params)
+			goto end;
+
+		pctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+		if (!pctx)
+			goto end;
+		if (EVP_PKEY_fromdata_init(pctx) != 1)
+			goto end;
+
+// 		if (EVP_PKEY_fromdata(pctx, pkey, EVP_PKEY_PUBLIC_KEY, params) != 1)
+		if (EVP_PKEY_fromdata(pctx, pkey, EVP_PKEY_KEYPAIR, params) != 1)
+			goto end;
+
+		{
+			EVP_PKEY_CTX *tmpctx = NULL;
+
+			tmpctx = EVP_PKEY_CTX_new_from_pkey(NULL, *pkey, NULL);
+			if (EVP_PKEY_check(tmpctx)) {
+				fprintf(stderr, "ERR EVP_PKEY_check\n");
+				goto end;
+			}
+
+			EVP_PKEY_CTX_free(tmpctx);
+		}
+
+// 		if (EVP_PKEY_public_check(pctx) != 1) {
+// 			fprintf(stderr, "ERR EVP_PKEY_check\n");
+// 			goto end;
+// 		}
+	}
 
 	retval = 0;
-end:
-	OSSL_PARAM_BLD_free(param_bld);
-	OSSL_PARAM_free(params);
-	EVP_PKEY_CTX_free(pctx);
 
+end:
+	free_trash_chunk(pubkey);
+	EC_POINT_free(ec_point);
+	EC_GROUP_free(group);
+	BN_CTX_free(bnctx);
+	OSSL_PARAM_BLD_free(param_bld);
+	EVP_PKEY_CTX_free(pctx);
+	OSSL_PARAM_free(params);
 	return retval;
 }
+// {
+// 	int retval = 1;
+// 	OSSL_PARAM *params = NULL;
+// 	OSSL_PARAM_BLD *param_bld = NULL;
+// 	EVP_PKEY_CTX *pctx = NULL;
+//
+// 	param_bld = OSSL_PARAM_BLD_new();
+//
+// 	if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME,
+// 					     b_orig(curve), b_data(curve)) ||
+// 	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_EC_PUB_X, nums[EC_BIGNUM_X]) ||
+// 	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_EC_PUB_Y, nums[EC_BIGNUM_Y]))
+// // 	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, nums[EC_BIGNUM_D]))
+// // 	    !OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, b_orig(privkey), b_data(privkey)))
+// 		goto end;
+//
+// 	params = OSSL_PARAM_BLD_to_param(param_bld);
+//
+// 	if (!params)
+// 		goto end;
+//
+// 	pctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+// 	if (!pctx)
+// 		goto end;
+// 	if (EVP_PKEY_fromdata_init(pctx) != 1)
+// 		goto end;
+//
+// 	if (EVP_PKEY_fromdata(pctx, pkey, EVP_PKEY_PUBLIC_KEY, params) != 1)
+// 		goto end;
+//
+// // 	if (EVP_PKEY_private_check(pctx) != 1) {
+// // 		fprintf(stderr ,"EVP_PKEY_private_check error\n");
+// // 		goto end;
+// // 	} else
+//  	if (EVP_PKEY_public_check(pctx) != 1) {
+// 		fprintf(stderr, "EVP_PKEY_public_check error\n");
+// // 		goto end;
+// 	}
+//
+// 	retval = 0;
+// end:
+// 	OSSL_PARAM_BLD_free(param_bld);
+// 	OSSL_PARAM_free(params);
+// 	EVP_PKEY_CTX_free(pctx);
+//
+// 	return retval;
+// }
 #else
 {
 	EC_POINT *pub = NULL;
@@ -1218,12 +1334,23 @@ end:
 	if (EC_KEY_check_key(ec_key) == 0)
 		goto end;
 
+	*pkey = EVP_PKEY_new();
+	if (!*pkey)
+		goto end;
+
+	if (EVP_PKEY_set1_EC_KEY(*pkey, ec_key) == 0)
+		goto end;
+
 	retval = 0;
 
 end:
 	BN_CTX_free(ctx);
 	EC_POINT_free(pub);
 	EC_KEY_free(ec_key);
+	if (retval) {
+		EVP_PKEY_free(*pkey);
+		*pkey = NULL;
+	}
 	return retval;
 }
 #endif
@@ -1232,8 +1359,12 @@ static int build_EC_PKEY_from_buf(struct buffer *jwk, EVP_PKEY **pkey)
 {
 	BIGNUM *nums[EC_BIGNUM_COUNT] = {};
 	int retval = 1;
-// 	int size = 0;
 	struct buffer *crv = NULL, *tmpbuf = NULL;
+
+	int size = 0;
+	struct buffer *d = alloc_trash_chunk();
+	if (!d)
+		goto end;
 
 	crv = alloc_trash_chunk();
 	if (!crv)
@@ -1250,10 +1381,22 @@ static int build_EC_PKEY_from_buf(struct buffer *jwk, EVP_PKEY **pkey)
 	if (get_jwk_field(jwk, "$.d", tmpbuf) || (nums[EC_BIGNUM_D] = base64url_to_BIGNUM(tmpbuf)) == NULL)
 		goto end;
 
+	size = base64urldec(b_orig(tmpbuf), b_data(tmpbuf), b_orig(d), b_size(d));
+	if (size < 0)
+		goto end;
+	d->data = size;
+
 	if (get_jwk_field(jwk, "$.crv", crv))
 		goto end;
 
-	retval = do_build_EC_PKEY(crv, nums, pkey);
+	retval = do_build_EC_PKEY(crv, d, nums, pkey);
+
+	if (!retval) {
+		BIO *bp = BIO_new_fp(stdout, BIO_NOCLOSE);
+		EVP_PKEY_print_private(bp, *pkey, 1, NULL);
+		EVP_PKEY_print_public(bp, *pkey, 1, NULL);
+		BIO_free(bp);
+	}
 
 end:
 #if HA_OPENSSL_VERSION_NUMBER > 0x30000000L
@@ -1263,6 +1406,7 @@ end:
 		clear_bignums(nums, EC_BIGNUM_COUNT);
 #endif
 
+	free_trash_chunk(d);
 	free_trash_chunk(crv);
 	free_trash_chunk(tmpbuf);
 	if (retval) {
@@ -1278,7 +1422,7 @@ end:
 typedef enum {
 	JWK_KTY_OCT,
 	JWK_KTY_RSA,
-// 	JWK_KTY_EC
+	JWK_KTY_EC
 } jwk_type;
 
 struct jwk {
@@ -1357,6 +1501,11 @@ static int process_jwk(struct buffer *jwk_buf, struct jwk *jwk)
 		jwk->type = JWK_KTY_RSA;
 
 		if (build_RSA_PKEY_from_buf(jwk_buf, &jwk->pkey))
+			goto end;
+	} else if (chunk_strcmp(kty, "EC") == 0) {
+		jwk->type = JWK_KTY_EC;
+
+		if (build_EC_PKEY_from_buf(jwk_buf, &jwk->pkey))
 			goto end;
 	} else
 		goto end;
@@ -1586,11 +1735,83 @@ end:
 }
 
 
+static int sample_conv_build_ec_check(struct arg *args, struct sample_conv *conv,
+                                      const char *file, int line, char **err)
+{
+	vars_check_arg(&args[0], NULL);
+
+	if (args[0].type == ARGT_STR) {
+		EVP_PKEY *pkey = NULL;
+		struct buffer *trash = get_trash_chunk();
+
+		if (get_jwk_field(&args[0].data.str, "$.kty", trash) == 0) {
+			if (chunk_strcmp(trash, "EC") == 0) {
+				if (build_EC_PKEY_from_buf(&args[0].data.str, &pkey)) {
+					memprintf(err, "Failed to parse JWK");
+					return 0;
+				}
+				EVP_PKEY_free(pkey);
+			} else {
+				memprintf(err, "Unmanaged key type (expected 'EC'");
+				return 0;
+			}
+		} else {
+			memprintf(err, "Missing key type (expected 'oct' or 'RSA')");
+			return 0;
+		}
+	}
+
+	return 1;
+
+}
+
+static int sample_conv_build_ec(const struct arg *args, struct sample *smp, void *private)
+
+{
+	int retval = 0;
+	struct sample jwk_smp;
+	struct buffer *jwk_buf = NULL;
+	struct buffer *input = NULL;
+	struct jwk jwk = {};
+
+	smp_set_owner(&jwk_smp, smp->px, smp->sess, smp->strm, smp->opt);
+	if (!sample_conv_var2smp_str(&args[0], &jwk_smp))
+		goto end;
+
+	/* Copy JWK parameter */
+	jwk_buf = alloc_trash_chunk();
+	if (!jwk_buf)
+		goto end;
+	if (!chunk_cpy(jwk_buf, &jwk_smp.data.u.str))
+		goto end;
+
+	/* Copy JWE input token */
+	input = alloc_trash_chunk();
+	if (!input)
+		goto end;
+	if (!chunk_cpy(input, &smp->data.u.str))
+		goto end;
+
+	/* Parse JWK argument. */
+	if (process_jwk(jwk_buf, &jwk))
+		goto end;
+
+	retval = 1;
+
+end:
+	clear_jwk(&jwk);
+	free_trash_chunk(input);
+	free_trash_chunk(jwk_buf);
+	return retval;
+
+}
+
 static struct sample_conv_kw_list sample_conv_kws = {ILH, {
 	/* JSON Web Token converters */
 	{ "jwt_decrypt_secret",    sample_conv_jwt_decrypt_secret, ARG1(1,STR), sample_conv_jwt_decrypt_secret_check, SMP_T_BIN, SMP_T_BIN },
 	{ "jwt_decrypt_cert",      sample_conv_jwt_decrypt_cert,   ARG1(1,STR), sample_conv_jwt_decrypt_cert_check,   SMP_T_BIN, SMP_T_BIN },
 	{ "jwt_decrypt_jwk",       sample_conv_jwt_decrypt_jwk,    ARG1(1,STR), sample_conv_jwt_decrypt_jwk_check,    SMP_T_BIN, SMP_T_BIN },
+	{ "build_ec",              sample_conv_build_ec,           ARG1(1,STR), sample_conv_build_ec_check,        SMP_T_BIN, SMP_T_BIN },
 	{ NULL, NULL, 0, 0, 0 },
 
 }};
