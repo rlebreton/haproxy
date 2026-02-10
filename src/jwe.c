@@ -1128,34 +1128,20 @@ enum {
 	EC_BIGNUM_COUNT
 };
 
-static int do_build_EC_PKEY(struct buffer *curve, struct buffer *privkey, BIGNUM *nums[EC_BIGNUM_COUNT], EVP_PKEY **pkey)
-#if HA_OPENSSL_VERSION_NUMBER >= 0x30000000L
+
+/*
+ * Build an EC pubkey out of its 'x' and 'y' parameters for EC curve with <nid>.
+ * Dump the corresponding pubkey in <out> buffer.
+ * Returns 0 in case of success, 1 otherwise.
+ */
+static inline int curve_param_to_pubkey(int nid, BIGNUM *x, BIGNUM *y, struct buffer *out)
 {
 	EC_POINT *ec_point = NULL;
-	int retval = 1;
-	struct buffer *pubkey = alloc_trash_chunk();
-// 	int size = 0;
 	EC_GROUP *group = NULL;
-	int nid = 0;
 	BN_CTX *bnctx = NULL;
+	int retval = 1;
 
-	OSSL_PARAM *params = NULL;
-	OSSL_PARAM_BLD *param_bld = NULL;
-	EVP_PKEY_CTX *pctx = NULL;
-
-
-	if (chunk_strcmp(curve, "P-256") == 0) {
-		nid = NID_X9_62_prime256v1;
-	} else if (chunk_strcmp(curve, "P-384") == 0) {
-		nid = NID_secp384r1;
-	} else if (chunk_strcmp(curve, "P-521") == 0) {
-		nid = NID_secp521r1;
-	} else if (chunk_strcmp(curve, "secp256k1") == 0) {
-		nid = NID_secp256k1;
-	} else
-		goto end;
-
-	if (!pubkey)
+	if (!out)
 		goto end;
 
 	group = EC_GROUP_new_by_curve_name(nid);
@@ -1170,165 +1156,96 @@ static int do_build_EC_PKEY(struct buffer *curve, struct buffer *privkey, BIGNUM
 	if (!ec_point)
 		goto end;
 
-	if (EC_POINT_set_affine_coordinates(group, ec_point, nums[EC_BIGNUM_X],
-					    nums[EC_BIGNUM_Y], bnctx) < 0)
+	if (EC_POINT_set_affine_coordinates(group, ec_point, x, y, bnctx) < 0)
 		goto end;
 
-	pubkey->data = EC_POINT_point2buf(group, ec_point,
-				  POINT_CONVERSION_UNCOMPRESSED, (unsigned char**)&pubkey->area, bnctx);
+	out->data = EC_POINT_point2buf(group, ec_point,
+				  POINT_CONVERSION_UNCOMPRESSED, (unsigned char**)&out->area, bnctx);
 
-	if (pubkey->data == 0)
+	if (out->data == 0)
 		goto end;
 
+	retval = 0;
 
-	{
-		param_bld = OSSL_PARAM_BLD_new();
+end:
+	EC_POINT_free(ec_point);
+	EC_GROUP_free(group);
+	BN_CTX_free(bnctx);
+	return retval;
+}
 
-		if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME,
-						     b_orig(curve), b_data(curve)) ||
-		    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, nums[EC_BIGNUM_D]) ||
-		    !OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PUB_KEY,
-						      pubkey->area, pubkey->data))
-			goto end;
 
-		params = OSSL_PARAM_BLD_to_param(param_bld);
+static int do_build_EC_PKEY(struct buffer *curve, struct buffer *privkey, BIGNUM *nums[EC_BIGNUM_COUNT], EVP_PKEY **pkey)
+#if HA_OPENSSL_VERSION_NUMBER >= 0x30000000L
+{
+	int retval = 1;
+	struct buffer *pubkey = NULL;
+	int nid = 0;
 
-		if (!params)
-			goto end;
+	OSSL_PARAM *params = NULL;
+	OSSL_PARAM_BLD *param_bld = NULL;
+	EVP_PKEY_CTX *pctx = NULL;
 
-		pctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
-		if (!pctx)
-			goto end;
-		if (EVP_PKEY_fromdata_init(pctx) != 1)
-			goto end;
+	nid = curves2nid(b_orig(curve));
+	if (nid == -1)
+		goto end;
 
-// 		if (EVP_PKEY_fromdata(pctx, pkey, EVP_PKEY_PUBLIC_KEY, params) != 1)
-		if (EVP_PKEY_fromdata(pctx, pkey, EVP_PKEY_KEYPAIR, params) != 1)
-			goto end;
+	pubkey = alloc_trash_chunk();
+	if (!pubkey)
+		goto end;
 
-		{
-			EVP_PKEY_CTX *tmpctx = NULL;
+	if (curve_param_to_pubkey(nid, nums[EC_BIGNUM_X], nums[EC_BIGNUM_Y], pubkey))
+		goto end;
 
-			tmpctx = EVP_PKEY_CTX_new_from_pkey(NULL, *pkey, NULL);
-			if (EVP_PKEY_check(tmpctx)) {
-				fprintf(stderr, "ERR EVP_PKEY_check\n");
-				goto end;
-			}
+	param_bld = OSSL_PARAM_BLD_new();
 
-			EVP_PKEY_CTX_free(tmpctx);
-		}
+	if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME,
+					     b_orig(curve), b_data(curve)) ||
+	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, nums[EC_BIGNUM_D]) ||
+	    !OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PUB_KEY,
+					      pubkey->area, pubkey->data))
+		goto end;
 
-// 		if (EVP_PKEY_public_check(pctx) != 1) {
-// 			fprintf(stderr, "ERR EVP_PKEY_check\n");
-// 			goto end;
-// 		}
-	}
+	params = OSSL_PARAM_BLD_to_param(param_bld);
+
+	if (!params)
+		goto end;
+
+	pctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+	if (!pctx)
+		goto end;
+
+	if (EVP_PKEY_fromdata_init(pctx) != 1 ||
+	    EVP_PKEY_fromdata(pctx, pkey, EVP_PKEY_KEYPAIR, params) != 1)
+		goto end;
 
 	retval = 0;
 
 end:
 	free_trash_chunk(pubkey);
-	EC_POINT_free(ec_point);
-	EC_GROUP_free(group);
-	BN_CTX_free(bnctx);
 	OSSL_PARAM_BLD_free(param_bld);
 	EVP_PKEY_CTX_free(pctx);
 	OSSL_PARAM_free(params);
 	return retval;
 }
-// {
-// 	int retval = 1;
-// 	OSSL_PARAM *params = NULL;
-// 	OSSL_PARAM_BLD *param_bld = NULL;
-// 	EVP_PKEY_CTX *pctx = NULL;
-//
-// 	param_bld = OSSL_PARAM_BLD_new();
-//
-// 	if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME,
-// 					     b_orig(curve), b_data(curve)) ||
-// 	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_EC_PUB_X, nums[EC_BIGNUM_X]) ||
-// 	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_EC_PUB_Y, nums[EC_BIGNUM_Y]))
-// // 	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, nums[EC_BIGNUM_D]))
-// // 	    !OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, b_orig(privkey), b_data(privkey)))
-// 		goto end;
-//
-// 	params = OSSL_PARAM_BLD_to_param(param_bld);
-//
-// 	if (!params)
-// 		goto end;
-//
-// 	pctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
-// 	if (!pctx)
-// 		goto end;
-// 	if (EVP_PKEY_fromdata_init(pctx) != 1)
-// 		goto end;
-//
-// 	if (EVP_PKEY_fromdata(pctx, pkey, EVP_PKEY_PUBLIC_KEY, params) != 1)
-// 		goto end;
-//
-// // 	if (EVP_PKEY_private_check(pctx) != 1) {
-// // 		fprintf(stderr ,"EVP_PKEY_private_check error\n");
-// // 		goto end;
-// // 	} else
-//  	if (EVP_PKEY_public_check(pctx) != 1) {
-// 		fprintf(stderr, "EVP_PKEY_public_check error\n");
-// // 		goto end;
-// 	}
-//
-// 	retval = 0;
-// end:
-// 	OSSL_PARAM_BLD_free(param_bld);
-// 	OSSL_PARAM_free(params);
-// 	EVP_PKEY_CTX_free(pctx);
-//
-// 	return retval;
-// }
 #else
 {
-	EC_POINT *pub = NULL;
 	EC_KEY *ec_key = NULL;
-	EC_GROUP *group = NULL;
-	BN_CTX *ctx = NULL;
 	int retval = 1;
 	int nid = 0;
 
-	if (chunk_strcmp(curve, "P-256") == 0) {
-		nid = NID_X9_62_prime256v1;
-	} else if (chunk_strcmp(curve, "P-384") == 0) {
-		nid = NID_secp384r1;
-	} else if (chunk_strcmp(curve, "P-521") == 0) {
-		nid = NID_secp521r1;
-	} else if (chunk_strcmp(curve, "secp256k1") == 0) {
-		nid = NID_secp256k1;
-	} else
+	nid = curves2nid(b_orig(curve));
+	if (nid == -1)
 		goto end;
 
 	ec_key = EC_KEY_new_by_curve_name(nid);
 	if (!ec_key)
 		goto end;
 
-
 	if (EC_KEY_set_private_key(ec_key, nums[EC_BIGNUM_D]) < 0)
 		goto end;
 
-
-	group = (EC_GROUP *)EC_KEY_get0_group(ec_key);
-	if (!group)
-		goto end;
-
-	ctx = BN_CTX_new();
-	if (!ctx)
-		goto end;
-
-	pub = EC_POINT_new(group);
-	if (!pub)
-		goto end;
-
-	if (EC_POINT_set_affine_coordinates(group, pub, nums[EC_BIGNUM_X],
-					    nums[EC_BIGNUM_Y], ctx) < 0)
-		goto end;
-
-	if (EC_KEY_set_public_key(ec_key, pub) < 0)
+	if (EC_KEY_set_public_key_affine_coordinates(ec_key, nums[EC_BIGNUM_X], nums[EC_BIGNUM_Y]) < 0)
 		goto end;
 
 	if (EC_KEY_check_key(ec_key) == 0)
@@ -1344,8 +1261,6 @@ end:
 	retval = 0;
 
 end:
-	BN_CTX_free(ctx);
-	EC_POINT_free(pub);
 	EC_KEY_free(ec_key);
 	if (retval) {
 		EVP_PKEY_free(*pkey);
@@ -1391,12 +1306,15 @@ static int build_EC_PKEY_from_buf(struct buffer *jwk, EVP_PKEY **pkey)
 
 	retval = do_build_EC_PKEY(crv, d, nums, pkey);
 
+
+#if 0
 	if (!retval) {
 		BIO *bp = BIO_new_fp(stdout, BIO_NOCLOSE);
 		EVP_PKEY_print_private(bp, *pkey, 1, NULL);
 		EVP_PKEY_print_public(bp, *pkey, 1, NULL);
 		BIO_free(bp);
 	}
+#endif
 
 end:
 #if HA_OPENSSL_VERSION_NUMBER > 0x30000000L
