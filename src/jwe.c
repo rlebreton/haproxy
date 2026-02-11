@@ -38,7 +38,7 @@ typedef enum {
 	JWE_ALG_A192KW,
 	JWE_ALG_A256KW,
 	JWE_ALG_DIR,
-	// JWE_ALG_ECDH_ES,
+	JWE_ALG_ECDH_ES,
 	// JWE_ALG_ECDH_ES_A128KW,
 	// JWE_ALG_ECDH_ES_A192KW,
 	// JWE_ALG_ECDH_ES_A256KW,
@@ -58,7 +58,7 @@ struct alg_enc jwe_algs[] = {
 	{ "A192KW", JWE_ALG_A192KW },
 	{ "A256KW", JWE_ALG_A256KW },
 	{ "dir", JWE_ALG_DIR },
-	{ "ECDH-ES", JWE_ALG_UNMANAGED },
+	{ "ECDH-ES", JWE_ALG_ECDH_ES },
 	{ "ECDH-ES+A128KW", JWE_ALG_UNMANAGED },
 	{ "ECDH-ES+A192KW", JWE_ALG_UNMANAGED },
 	{ "ECDH-ES+A256KW", JWE_ALG_UNMANAGED },
@@ -114,6 +114,9 @@ enum jwe_elt {
 struct jose_fields {
 	struct buffer *tag;
 	struct buffer *iv;
+	struct buffer *epk;
+	struct buffer *apu;
+	struct buffer *apv;
 };
 
 
@@ -137,11 +140,14 @@ static inline int parse_alg_enc(struct buffer *buf, struct alg_enc *array)
 }
 
 /*
- * Look for field <field_name> in JSON <decoded_jose> and base64url decode its
- * content in buffer <out>.
- * The field might not be found, it won't be raised as an error.
+ * Look for field <field_name> in JSON <decoded_jose> and if it is found,
+ * allocate an <out> buffer and base64url decode the field's content in it.
+ * If <mandatory> is set to 1, an error will be raised if the field is not
+ * found.
+ * Returns 0 in case of success, 1 in case of error (decoding or alloc error).
  */
-static inline int decode_jose_field(struct buffer *decoded_jose, const char *field_name, struct buffer *out)
+static inline int decode_jose_field(struct buffer *decoded_jose, const char *field_name,
+				    struct buffer **out, int mandatory)
 {
 	struct buffer *trash = get_trash_chunk();
 	int size = 0;
@@ -153,12 +159,21 @@ static inline int decode_jose_field(struct buffer *decoded_jose, const char *fie
 				b_orig(trash), b_size(trash));
 	if (size != -1) {
 		trash->data = size;
-		size = base64urldec(b_orig(trash), b_data(trash),
-				    b_orig(out), b_size(out));
-		if (size < 0)
+
+		*out = alloc_trash_chunk();
+		if (!*out)
 			return 1;
-		out->data = size;
-	}
+
+		size = base64urldec(b_orig(trash), b_data(trash),
+				    b_orig(*out), b_size(*out));
+		if (size < 0) {
+			free_trash_chunk(*out);
+			*out = NULL;
+			return 1;
+		}
+		(*out)->data = size;
+	} else if (mandatory)
+		return 1;
 
 	return 0;
 }
@@ -173,6 +188,9 @@ static int parse_jose(struct buffer *decoded_jose, int *alg, int *enc, struct jo
 	struct buffer *trash = NULL;
 	int retval = 0;
 	int size = 0;
+
+	int gcm = 0;
+	int ec = 0;
 
 	/* Look for "alg" field */
 	trash = get_trash_chunk();
@@ -196,18 +214,59 @@ static int parse_jose(struct buffer *decoded_jose, int *alg, int *enc, struct jo
 	if (*enc == JWE_ENC_UNMANAGED)
 		goto end;
 
-	/* Look for "tag" field (used by aes gcm encryption) */
-	if (decode_jose_field(decoded_jose, "$.tag", jose_fields->tag))
-		goto end;
+	switch (*alg) {
+	case JWE_ALG_ECDH_ES:
+		ec = 1;
+		break;
+	case JWE_ALG_A128GCMKW:
+	case JWE_ALG_A192GCMKW:
+	case JWE_ALG_A256GCMKW:
+		gcm = 1;
+		break;
+	default: break;
+	}
 
-	/* Look for "iv" field (used by aes gcm encryption) */
-	if (decode_jose_field(decoded_jose, "$.iv", jose_fields->iv))
-		goto end;
+
+	if (gcm) {
+		/* Look for "tag" field (used by aes gcm encryption) */
+		if (decode_jose_field(decoded_jose, "$.tag", &jose_fields->tag, 1))
+			goto end;
+
+		/* Look for "iv" field (used by aes gcm encryption) */
+		if (decode_jose_field(decoded_jose, "$.iv", &jose_fields->iv, 1))
+			goto end;
+	}
+
+	if (ec) {
+		/* Look for optional "epk" field (used by ecdh encryption) */
+		if (decode_jose_field(decoded_jose, "$.epk", &jose_fields->epk, 1))
+			goto end;
+
+		/* Look for optional "apu" field (used by ecdh encryption) */
+		if (decode_jose_field(decoded_jose, "$.apu", &jose_fields->apu, 0))
+			goto end;
+
+		/* Look for optional "apv" field (used by ecdh encryption) */
+		if (decode_jose_field(decoded_jose, "$.apv", &jose_fields->apv, 0))
+			goto end;
+	}
 
 	retval = 1;
 
 end:
 	return retval;
+}
+
+static void clear_jose_fields(struct jose_fields *jose_fields)
+{
+	if (!jose_fields)
+		return;
+
+	free_trash_chunk(jose_fields->tag);
+	free_trash_chunk(jose_fields->iv);
+	free_trash_chunk(jose_fields->epk);
+	free_trash_chunk(jose_fields->apu);
+	free_trash_chunk(jose_fields->apv);
 }
 
 
@@ -519,8 +578,6 @@ static int sample_conv_jwt_decrypt_secret(const struct arg *args, struct sample 
 	struct buffer **cek = NULL;
 	struct buffer *decrypted_cek = NULL;
 	struct buffer *out = NULL;
-	struct buffer *alg_tag = NULL;
-	struct buffer *alg_iv = NULL;
 	int size = 0;
 	jwe_alg alg = JWE_ALG_UNMANAGED;
 	jwe_enc enc = JWE_ENC_UNMANAGED;
@@ -536,16 +593,6 @@ static int sample_conv_jwt_decrypt_secret(const struct arg *args, struct sample 
 
 	if (jwt_tokenize(input, items, &item_num) || item_num != JWE_ELT_MAX)
 		goto end;
-
-	alg_tag = alloc_trash_chunk();
-	if (!alg_tag)
-		goto end;
-	alg_iv = alloc_trash_chunk();
-	if (!alg_iv)
-		goto end;
-
-	fields.tag = alg_tag;
-	fields.iv = alg_iv;
 
 	/* Base64Url decode the JOSE header */
 	decoded_items[JWE_ELT_JOSE] = alloc_trash_chunk();
@@ -617,7 +664,8 @@ static int sample_conv_jwt_decrypt_secret(const struct arg *args, struct sample 
 		(*cek)->data = cek_size;
 
 		if (gcm) {
-			if (!decrypt_cek_aesgcmkw(*cek, alg_tag, alg_iv, decrypted_cek, &secret_smp.data.u.str, alg))
+			if (!decrypt_cek_aesgcmkw(*cek, fields.tag, fields.iv, decrypted_cek,
+			                          &secret_smp.data.u.str, alg))
 				goto end;
 		} else {
 			if (!decrypt_cek_aeskw(*cek, decrypted_cek, &secret_smp.data.u.str, alg))
@@ -645,11 +693,10 @@ static int sample_conv_jwt_decrypt_secret(const struct arg *args, struct sample 
 	retval = 1;
 
 end:
+	clear_jose_fields(&fields);
 	free_trash_chunk(input);
 	free_trash_chunk(decrypted_cek);
 	free_trash_chunk(out);
-	free_trash_chunk(alg_tag);
-	free_trash_chunk(alg_iv);
 	clear_decoded_items(decoded_items);
 	return retval;
 }
@@ -1498,9 +1545,6 @@ static int sample_conv_jwt_decrypt_jwk(const struct arg *args, struct sample *sm
 	struct buffer *out = NULL;
 	struct jose_fields fields = {};
 
-	struct buffer *alg_tag = NULL;
-	struct buffer *alg_iv = NULL;
-
 	struct buffer *jwk_buf = NULL;
 	struct jwk jwk = {};
 
@@ -1524,16 +1568,6 @@ static int sample_conv_jwt_decrypt_jwk(const struct arg *args, struct sample *sm
 
 	if (jwt_tokenize(input, items, &item_num) || item_num != JWE_ELT_MAX)
 		goto end;
-
-	alg_tag = alloc_trash_chunk();
-	if (!alg_tag)
-		goto end;
-	alg_iv = alloc_trash_chunk();
-	if (!alg_iv)
-		goto end;
-
-	fields.tag = alg_tag;
-	fields.iv = alg_iv;
 
 	/* Base64Url decode the JOSE header */
 	decoded_items[JWE_ELT_JOSE] = alloc_trash_chunk();
@@ -1621,7 +1655,7 @@ static int sample_conv_jwt_decrypt_jwk(const struct arg *args, struct sample *sm
 				goto end;
 		} else {
 			if (gcm) {
-				if (!decrypt_cek_aesgcmkw(*cek, alg_tag, alg_iv, decrypted_cek, jwk.secret, alg))
+				if (!decrypt_cek_aesgcmkw(*cek, fields.tag, fields.iv, decrypted_cek, jwk.secret, alg))
 					goto end;
 			} else {
 				if (!decrypt_cek_aeskw(*cek, decrypted_cek, jwk.secret, alg))
@@ -1642,12 +1676,11 @@ static int sample_conv_jwt_decrypt_jwk(const struct arg *args, struct sample *sm
 
 end:
 	clear_jwk(&jwk);
+	clear_jose_fields(&fields);
 	free_trash_chunk(jwk_buf);
 	free_trash_chunk(input);
 	free_trash_chunk(decrypted_cek);
 	free_trash_chunk(out);
-	free_trash_chunk(alg_tag);
-	free_trash_chunk(alg_iv);
 	clear_decoded_items(decoded_items);
 	return retval;
 }
