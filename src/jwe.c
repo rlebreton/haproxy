@@ -115,6 +115,7 @@ struct jose_fields {
 	struct buffer *tag;
 	struct buffer *iv;
 	struct buffer *epk;
+	EVP_PKEY *pubkey;
 	struct buffer *apu;
 	struct buffer *apv;
 };
@@ -178,6 +179,7 @@ static inline int decode_jose_field(struct buffer *decoded_jose, const char *fie
 	return 0;
 }
 
+static int build_EC_PKEY_from_buf(struct buffer *jwk, EVP_PKEY **pkey);
 
 /*
  * Extract the "alg" and "enc" of the JOSE header as well as some algo-specific
@@ -242,6 +244,9 @@ static int parse_jose(struct buffer *decoded_jose, int *alg, int *enc, struct jo
 		if (decode_jose_field(decoded_jose, "$.epk", &jose_fields->epk, 1))
 			goto end;
 
+		if (build_EC_PKEY_from_buf(jose_fields->epk, &jose_fields->pubkey))
+			goto end;
+
 		/* Look for optional "apu" field (used by ecdh encryption) */
 		if (decode_jose_field(decoded_jose, "$.apu", &jose_fields->apu, 0))
 			goto end;
@@ -265,6 +270,7 @@ static void clear_jose_fields(struct jose_fields *jose_fields)
 	free_trash_chunk(jose_fields->tag);
 	free_trash_chunk(jose_fields->iv);
 	free_trash_chunk(jose_fields->epk);
+	EVP_PKEY_free(jose_fields->pubkey);
 	free_trash_chunk(jose_fields->apu);
 	free_trash_chunk(jose_fields->apv);
 }
@@ -1222,7 +1228,7 @@ end:
 }
 
 
-static int do_build_EC_PKEY(struct buffer *curve, struct buffer *privkey, BIGNUM *nums[EC_BIGNUM_COUNT], EVP_PKEY **pkey)
+static int do_build_EC_PKEY(struct buffer *curve, BIGNUM *nums[EC_BIGNUM_COUNT], EVP_PKEY **pkey)
 #if HA_OPENSSL_VERSION_NUMBER >= 0x30000000L
 {
 	int retval = 1;
@@ -1248,9 +1254,9 @@ static int do_build_EC_PKEY(struct buffer *curve, struct buffer *privkey, BIGNUM
 
 	if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME,
 					     b_orig(curve), b_data(curve)) ||
-	    !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, nums[EC_BIGNUM_D]) ||
 	    !OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PUB_KEY,
-					      pubkey->area, pubkey->data))
+					      pubkey->area, pubkey->data) ||
+	    (nums[EC_BIGNUM_D] && !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, nums[EC_BIGNUM_D])))
 		goto end;
 
 	params = OSSL_PARAM_BLD_to_param(param_bld);
@@ -1289,7 +1295,7 @@ end:
 	if (!ec_key)
 		goto end;
 
-	if (EC_KEY_set_private_key(ec_key, nums[EC_BIGNUM_D]) < 0)
+	if (nums[EC_BIGNUM_D] && EC_KEY_set_private_key(ec_key, nums[EC_BIGNUM_D]) < 0)
 		goto end;
 
 	if (EC_KEY_set_public_key_affine_coordinates(ec_key, nums[EC_BIGNUM_X], nums[EC_BIGNUM_Y]) < 0)
@@ -1323,11 +1329,6 @@ static int build_EC_PKEY_from_buf(struct buffer *jwk, EVP_PKEY **pkey)
 	int retval = 1;
 	struct buffer *crv = NULL, *tmpbuf = NULL;
 
-	int size = 0;
-	struct buffer *d = alloc_trash_chunk();
-	if (!d)
-		goto end;
-
 	crv = alloc_trash_chunk();
 	if (!crv)
 		goto end;
@@ -1340,19 +1341,15 @@ static int build_EC_PKEY_from_buf(struct buffer *jwk, EVP_PKEY **pkey)
 		goto end;
 	if (get_jwk_field(jwk, "$.y", tmpbuf) || (nums[EC_BIGNUM_Y] = base64url_to_BIGNUM(tmpbuf)) == NULL)
 		goto end;
-	if (get_jwk_field(jwk, "$.d", tmpbuf) || (nums[EC_BIGNUM_D] = base64url_to_BIGNUM(tmpbuf)) == NULL)
+	/* "d" is optional, we might have a pure public key with only "x" and
+	 * "y" provided. */
+	if (get_jwk_field(jwk, "$.d", tmpbuf) && (nums[EC_BIGNUM_D] = base64url_to_BIGNUM(tmpbuf)) == NULL)
 		goto end;
-
-	size = base64urldec(b_orig(tmpbuf), b_data(tmpbuf), b_orig(d), b_size(d));
-	if (size < 0)
-		goto end;
-	d->data = size;
 
 	if (get_jwk_field(jwk, "$.crv", crv))
 		goto end;
 
-	retval = do_build_EC_PKEY(crv, d, nums, pkey);
-
+	retval = do_build_EC_PKEY(crv, nums, pkey);
 
 #if 0
 	if (!retval) {
@@ -1371,7 +1368,6 @@ end:
 		clear_bignums(nums, EC_BIGNUM_COUNT);
 #endif
 
-	free_trash_chunk(d);
 	free_trash_chunk(crv);
 	free_trash_chunk(tmpbuf);
 	if (retval) {
@@ -1604,6 +1600,9 @@ static int sample_conv_jwt_decrypt_jwk(const struct arg *args, struct sample *sm
 	case JWE_ALG_DIR:
 		dir = 1;
 		oct = 1;
+		break;
+	case JWE_ALG_ECDH_ES:
+		ec = 1;
 		break;
 	default:
 		/* Not managed yet */
