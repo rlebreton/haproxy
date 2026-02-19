@@ -1440,6 +1440,8 @@ static inline int curve_param_to_pubkey(int nid, BIGNUM *x, BIGNUM *y, struct bu
 	EC_GROUP *group = NULL;
 	BN_CTX *bnctx = NULL;
 	int retval = 1;
+	unsigned char *pbuf = NULL;
+	size_t plen = 0;
 
 	if (!out)
 		goto end;
@@ -1459,15 +1461,18 @@ static inline int curve_param_to_pubkey(int nid, BIGNUM *x, BIGNUM *y, struct bu
 	if (EC_POINT_set_affine_coordinates(group, ec_point, x, y, bnctx) < 0)
 		goto end;
 
-	out->data = EC_POINT_point2buf(group, ec_point,
-				  POINT_CONVERSION_UNCOMPRESSED, (unsigned char**)&out->area, bnctx);
+	plen = EC_POINT_point2buf(group, ec_point, POINT_CONVERSION_UNCOMPRESSED, &pbuf, bnctx);
 
-	if (out->data == 0)
+	if (plen == 0)
+		goto end;
+
+	if (chunk_memcpy(out, (char*)pbuf, plen) == 0)
 		goto end;
 
 	retval = 0;
 
 end:
+	OPENSSL_free(pbuf);
 	EC_POINT_free(ec_point);
 	EC_GROUP_free(group);
 	BN_CTX_free(bnctx);
@@ -1655,6 +1660,7 @@ static void clear_jwk(struct jwk *jwk)
 		jwk->secret = NULL;
 		break;
 	case JWK_KTY_RSA:
+	case JWK_KTY_EC:
 		EVP_PKEY_free(jwk->pkey);
 		jwk->pkey = NULL;
 		break;
