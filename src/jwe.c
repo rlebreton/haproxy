@@ -1609,12 +1609,7 @@ static int build_EC_PKEY_from_buf(struct buffer *jwk, EVP_PKEY **pkey)
 #endif
 
 end:
-#if HA_OPENSSL_VERSION_NUMBER > 0x30000000L
 	clear_bignums(nums, EC_BIGNUM_COUNT);
-#else
-	if (retval)
-		clear_bignums(nums, EC_BIGNUM_COUNT);
-#endif
 
 	free_trash_chunk(crv);
 	free_trash_chunk(tmpbuf);
