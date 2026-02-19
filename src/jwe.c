@@ -1429,6 +1429,7 @@ enum {
 };
 
 
+#if HA_OPENSSL_VERSION_NUMBER >= 0x30000000L
 /*
  * Build an EC pubkey out of its 'x' and 'y' parameters for EC curve with <nid>.
  * Dump the corresponding pubkey in <out> buffer.
@@ -1440,8 +1441,6 @@ static inline int curve_param_to_pubkey(int nid, BIGNUM *x, BIGNUM *y, struct bu
 	EC_GROUP *group = NULL;
 	BN_CTX *bnctx = NULL;
 	int retval = 1;
-	unsigned char *pbuf = NULL;
-	size_t plen = 0;
 
 	if (!out)
 		goto end;
@@ -1461,23 +1460,21 @@ static inline int curve_param_to_pubkey(int nid, BIGNUM *x, BIGNUM *y, struct bu
 	if (EC_POINT_set_affine_coordinates(group, ec_point, x, y, bnctx) < 0)
 		goto end;
 
-	plen = EC_POINT_point2buf(group, ec_point, POINT_CONVERSION_UNCOMPRESSED, &pbuf, bnctx);
+	out->data = EC_POINT_point2oct(group, ec_point, POINT_CONVERSION_UNCOMPRESSED,
+	                               (unsigned char*)b_orig(out), b_size(out), bnctx);
 
-	if (plen == 0)
-		goto end;
-
-	if (chunk_memcpy(out, (char*)pbuf, plen) == 0)
+	if (out->data == 0)
 		goto end;
 
 	retval = 0;
 
 end:
-	OPENSSL_free(pbuf);
 	EC_POINT_free(ec_point);
 	EC_GROUP_free(group);
 	BN_CTX_free(bnctx);
 	return retval;
 }
+#endif
 
 
 static int do_build_EC_PKEY(struct buffer *curve, BIGNUM *nums[EC_BIGNUM_COUNT], EVP_PKEY **pkey)
