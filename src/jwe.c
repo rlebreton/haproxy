@@ -1026,15 +1026,15 @@ static int do_decrypt_cek_ec(struct buffer *cek, struct buffer *decrypted_cek, E
 		int keydatalen = (key_size >> 3);
 
 		int reps = keydatalen / hashlen;
-		int counter = 1;
+		int counter = 0;
 		int offset = 0;
 
 		for (; counter <= reps; ++counter) {
 
-			uint32_t be_counter = htonl(counter);
+			uint32_t be_counter = htonl(counter+1);
 
 			if (EVP_DigestInit_ex(ctx, md, NULL) != 1 ||
-			    EVP_DigestUpdate(ctx, (char*)&be_counter, sizeof(counter)) != 1 ||
+			    EVP_DigestUpdate(ctx, (char*)&be_counter, sizeof(be_counter)) != 1 ||
 			    EVP_DigestUpdate(ctx, b_orig(derived_secret), b_data(derived_secret)) != 1 ||
 			    EVP_DigestUpdate(ctx, b_orig(otherinfo), b_data(otherinfo)) != 1 ||
 			    EVP_DigestFinal_ex(ctx, (unsigned char*)(decrypted_cek->area + offset), NULL) != 1)
