@@ -292,7 +292,7 @@ client c10 -connect ${h1_mainfe_sock} {
     txreq -url "/jwk" -hdr "Authorization: Bearer eyJhbGciOiJFQ0RILUVTK0ExOTJLVyIsImVuYyI6IkExOTJDQkMtSFMzODQiLCJlcGsiOnsiY3J2IjoiUC0zODQiLCJrdHkiOiJFQyIsIngiOiJDcTd3Y0MzUm92VFRZSTMzLU9DcXBocjFlN1NzeEZWY0dOQXhEOEpWZHBRQmROaGg3Z2dLNTJKVkJ1RF9uZXVHIiwieSI6IjlaLU1MV09TQ3VZd0JZVTEtcTd2YUREWUZ1WFhqc1EwSmxpWllLVmdOU0dqVHVLY3VXQnJHemV2RzZEeGgyRHQifX0.75lt6Ixq6UhlN8uiaEphy8SiqEVsuD4Rc3QbFcmP7MJUTyt15LcZ3y-M7TJeNBh3Ajy_6K2WooU.cO9tUaQ2eVo0tIuOqb5_Bw.HQ6DqnLhW2Ad0c78WFGgwCStefYdL37xmh2Fa2mCsVNW5q0K3-xeDHYuIP9Q5xBYEY70U6wV5a0iVN87ii_iMA.feLteQh1ickYVJ2ZZ2whoVzNGRHgUpjp" \
                     -hdr "X-JWK: {\"alg\":\"ECDH-ES+A192KW\",\"crv\":\"P-384\",\"d\":\"pj6xIezfwtUakkkLtbRQ9FmN6uN1YJ-TSBkWn4awuDfWiHgqpQHA7_L95Hjks1cK\",\"key_ops\":[\"wrapKey\",\"unwrapKey\"],\"kty\":\"EC\",\"x\":\"JO3ojbUYOzoSb-7lAy-c7VhDIjhEtg4zrPn_NJKuGhat-cuI1c4LvOj3n8p3j4bn\",\"y\":\"CA3i4pN7t6liWxQXyxdDp9t79B8uWuubGADJuGn_2_yl6pufhnQ30OBA590fOtEm\"}"
     rxresp
-    expect resp.http.x-decrypted ~ "(Random test message for ECDH-ES+A192KW encrypted tokens|AWS-LC UNMANAGED)"
+    expect resp.http.x-decrypted ~ "(Random test message for ECDH-ES\\+A192KW encrypted tokens|AWS-LC UNMANAGED)"
 
 
     # ECDH-ES+A256KW
