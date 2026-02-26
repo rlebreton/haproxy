@@ -88,6 +88,11 @@ haproxy h1 -conf {
 
         http-request set-var(txn.decrypted) var(txn.jwe),jwt_decrypt_cert(txn.pem)
 
+    .if ssllib_name_startswith(AWS-LC)
+        acl aws_unmanaged var(txn.jwe),jwt_header_query('$.alg') -m end "A128KW" -m end "A192KW"
+        http-request set-var(txn.decrypted) str("AWS-LC UNMANAGED") if aws_unmanaged
+    .endif
+
         http-after-response set-header X-Decrypted %[var(txn.decrypted)]
         server s1 ${s1_addr}:${s1_port}
 
@@ -280,10 +285,10 @@ client c9 -connect ${h1_mainfe_sock} {
     rxresp
     expect resp.http.x-decrypted == "Random test message for ECDH-ES encrypted tokens"
 
-    txreq -url "/pem" -hdr "Authorization: Bearer eyJhbGciOiJFQ0RILUVTK0ExMjhLVyIsImVuYyI6IkExMjhDQkMtSFMyNTYiLCJlcGsiOnsiY3J2IjoiUC0yNTYiLCJrdHkiOiJFQyIsIngiOiJtc2poQktWNW5oNnBjdjhoRnR0UDlFVXRzaURzWG83T3RCekVZYkVJM1EwIiwieSI6IloxQ3FPQlEya1RNR1lENWdMUWJCaHB0MzRKRkR3dW5TX2ZzSmhsMlc1OWcifX0.5l7YaATvAWFJnWK_HsBPmawJ0RMqrkiwyZ9xAuiYCFSiqWWSr8D82A.0sa1s5V2RcDf0FW6hA1lig.z2DVLxtHeY1fPp6dJHiHEuHLVIQHQ10GfYXeFxwNE7JGyto-D3K1elHQn0Yq4Pitaheja21gnXkJajXhOA0rwQ.YmpToFWmj8XQrXMeXTa9eQ" \
+    txreq -url "/pem" -hdr "Authorization: Bearer eyJhbGciOiJFQ0RILUVTIiwiZW5jIjoiQTEyOENCQy1IUzI1NiIsImVwayI6eyJjcnYiOiJQLTI1NiIsImt0eSI6IkVDIiwieCI6InhEcUZveF9oR3Q5VjZWSWZjRUpaU1VVTm1uT0V5Qk1BYzZybHlOV09lcjgiLCJ5IjoiUVZmdkstcVJ0V0J1Uk9XVzRnMmlVampqMFN3U1BzYjB6ZE10R0c2czBFUSJ9fQ..0ykoqdP2WMKra2VugMQMzg.dyCI6QGNIf-x4n0DIaXgVnGtoSCOD3sOX7I01djrFdNRRSmPnITcQiJn1lw1LbiZyqZxOLf_mJHw7BRrcgPxBG6gsP3oFBnLeXllcD6kuLtllVofaPDEKdr66W9dp6Cr.002j4NUlGTYz8d_0mTM38A" \
             -hdr "X-PEM: ${testdir}/ec_decrypt.crt"
     rxresp
-    expect resp.http.x-decrypted == "Random test message for ECDH-ES encrypted tokens"
+    expect resp.http.x-decrypted == "Random test message for ECDH-ES encrypted token (with some extra padding for good measure)"
 
 } -run
 
