@@ -641,7 +641,7 @@ static inline unsigned int days_since_zero(unsigned int y)
  * It is meant as a portable replacement for timegm() for use with valid inputs.
  * Returns undefined results for invalid dates (eg: months out of range 0..11).
  */
-extern time_t my_timegm(const struct tm *tm);
+extern unsigned long my_timegm(const struct tm *tm);
 
 /* This function parses a time value optionally followed by a unit suffix among
  * "d", "h", "m", "s", "ms" or "us". It converts the value into the unit

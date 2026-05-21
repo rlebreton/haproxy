@@ -212,12 +212,12 @@ struct cache_entry {
 	unsigned int etag_length; /* Length of the ETag value (if one was found in the response). */
 	unsigned int etag_offset; /* Offset of the ETag value in the data buffer. */
 
-	time_t last_modified; /* Origin server "Last-Modified" header value converted in
-			       * seconds since epoch. If no "Last-Modified"
-			       * header is found, use "Date" header value,
-			       * otherwise use reception time. This field will
-			       * be used in case of an "If-Modified-Since"-based
-			       * conditional request. */
+	unsigned long last_modified; /* Origin server "Last-Modified" header value converted in
+				      * seconds since epoch. If no "Last-Modified"
+				      * header is found, use "Date" header value,
+				      * otherwise use reception time. This field will
+				      * be used in case of an "If-Modified-Since"-based
+				      * conditional request. */
 
 	unsigned char data[0];
 };
@@ -1050,9 +1050,9 @@ static void cache_reserve_finish(struct shared_context *shctx)
  * date value should be compared to a date determined by in a previous response (for
  * the same entity). This date could either be the "Last-Modified" value, or the "Date"
  * value of the response's reception time (by decreasing order of priority). */
-static time_t get_last_modified_time(struct htx *htx)
+static unsigned long get_last_modified_time(struct htx *htx)
 {
-	time_t last_modified = 0;
+	unsigned long last_modified = 0;
 	struct http_hdr_ctx ctx = { .blk = NULL };
 	struct tm tm = {};
 
@@ -2025,7 +2025,7 @@ static int should_send_notmodified_response(struct cache *cache, struct htx *htx
 	int if_none_match_found = 0;
 
 	struct tm tm = {};
-	time_t if_modified_since = 0;
+	unsigned long if_modified_since = 0;
 
 	/* If we find a "If-None-Match" header in the request, rebuild the
 	 * cache_entry's ETag in order to perform comparisons.

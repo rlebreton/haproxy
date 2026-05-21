@@ -4151,7 +4151,7 @@ char *localdate2str_log(char *dst, time_t t, struct tm *tm, size_t size)
  * It is meant as a portable replacement for timegm() for use with valid inputs.
  * Returns undefined results for invalid dates (eg: months out of range 0..11).
  */
-time_t my_timegm(const struct tm *tm)
+unsigned long my_timegm(const struct tm *tm)
 {
 	/* Each month has 28, 29, 30 or 31 days, or 28+N. The date in the year
 	 * is thus (current month - 1)*28 + cumulated_N[month] to count the
