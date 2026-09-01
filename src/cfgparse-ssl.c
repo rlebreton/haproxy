@@ -2140,6 +2140,13 @@ static int srv_parse_no_tls_tickets(char **args, int *cur_arg, struct proxy *px,
 	newsrv->ssl_ctx.options |= SRV_SSL_O_NO_TLS_TICKETS;
 	return 0;
 }
+
+/* parse the "no-tls-tickets" server keyword */
+static int srv_parse_pha(char **args, int *cur_arg, struct proxy *px, struct server *newsrv, char **err)
+{
+	newsrv->ssl_ctx.options |= SRV_SSL_O_PHA;
+	return 0;
+}
 /* parse the "send-proxy-v2-ssl" server keyword */
 static int srv_parse_send_proxy_ssl(char **args, int *cur_arg, struct proxy *px, struct server *newsrv, char **err)
 {
@@ -2821,6 +2828,7 @@ static struct srv_kw_list srv_kws = { "SSL", { }, {
 	{ "no-tlsv13",               srv_parse_tls_method_options, 0, 0, 1 }, /* disable TLSv13 */
 	{ "no-tls-tickets",          srv_parse_no_tls_tickets,     0, 1, 1 }, /* disable session resumption tickets */
 	{ "npn",                     srv_parse_npn,                1, 1, 1 }, /* Set NPN supported protocols */
+	{ "pha",                     srv_parse_pha,                0, 1, 1 }, /* Allow Post Handshake Authentication */
 	{ "renegotiate",             srv_parse_renegotiate,        0, 1, 1 }, /* Allow secure renegotiation */
 	{ "send-proxy-v2-ssl",       srv_parse_send_proxy_ssl,     0, 1, 1 }, /* send PROXY protocol header v2 with SSL info */
 	{ "send-proxy-v2-ssl-cn",    srv_parse_send_proxy_cn,      0, 1, 1 }, /* send PROXY protocol header v2 with CN */
