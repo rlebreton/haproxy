@@ -1,0 +1,203 @@
+feature ignore_unknown_macro
+
+# The OCSP responder has to serve 5 requests:
+#  - one for the "good" client certificate through the "no-deny" frontend
+#  - one for the "revoked" client certificate through the "no-deny" frontend
+#  - one for the "good" client certificate through the default (deny) frontend
+#  - one for the "revoked" client certificate through the default (deny) frontend
+#  - one for the "good" client certificate through the tcp-request frontend
+# The clients that have no OCSP URI in their certificate (or no certificate at
+# all) do not generate any OCSP request.
+process p1 "openssl ocsp -index ${testdir}/certs/ocsp_client_check/index.txt -rsigner ${testdir}/certs/ocsp_client_check/ca/ocsp_client_check_ca.crt -rkey ${testdir}/certs/ocsp_client_check/ca.key -CA ${testdir}/certs/ocsp_client_check/ca/ocsp_client_check_ca.crt -nrequest 5 -ndays 1 -port 12346 -timeout 5" -start
+
+haproxy h1 -conf {
+    global
+    .if feature(THREAD)
+        thread-groups 1
+    .endif
+
+        stats socket "${tmpdir}/h1/stats" level admin
+        # The issuer of the client certificates must be known in order to be
+        # able to build the OCSP request and to check the OCSP response's
+        # signature.
+        issuers-chain-path "${testdir}/certs/ocsp_client_check/ca/"
+        crt-base "${testdir}/certs/ocsp_client_check"
+
+    defaults
+        mode http
+        option httplog
+        log stderr local0 debug err
+        timeout connect "${HAPROXY_TEST_TIMEOUT-5s}"
+        timeout client  "${HAPROXY_TEST_TIMEOUT-5s}"
+        timeout server  "${HAPROXY_TEST_TIMEOUT-5s}"
+        # The 'wait-for-ocsp' action uses the http-request timeout as a limit
+        # for the whole OCSP request/response process.
+        timeout http-request "${HAPROXY_TEST_TIMEOUT-5s}"
+
+    # Clear listeners used to build TLS connections that present the various
+    # client certificates to the SSL frontends.
+    listen clear-good-nodeny-lst
+        bind "fd@${clear_good_nodeny}"
+        server s1 "${VTC_SOCK_TYPE}+${h1_ssl_nodeny_sock}" ssl verify none crt client_good.pem
+
+    listen clear-revoked-nodeny-lst
+        bind "fd@${clear_revoked_nodeny}"
+        server s1 "${VTC_SOCK_TYPE}+${h1_ssl_nodeny_sock}" ssl verify none crt client_revoked.pem
+
+    listen clear-noocsp-nodeny-lst
+        bind "fd@${clear_noocsp_nodeny}"
+        server s1 "${VTC_SOCK_TYPE}+${h1_ssl_nodeny_sock}" ssl verify none crt client_no_ocsp.pem
+
+    listen clear-nocert-nodeny-lst
+        bind "fd@${clear_nocert_nodeny}"
+        server s1 "${VTC_SOCK_TYPE}+${h1_ssl_nodeny_sock}" ssl verify none
+
+    listen clear-good-deny-lst
+        bind "fd@${clear_good_deny}"
+        server s1 "${VTC_SOCK_TYPE}+${h1_ssl_deny_sock}" ssl verify none crt client_good.pem
+
+    listen clear-revoked-deny-lst
+        bind "fd@${clear_revoked_deny}"
+        server s1 "${VTC_SOCK_TYPE}+${h1_ssl_deny_sock}" ssl verify none crt client_revoked.pem
+
+    listen clear-good-tcp-lst
+        bind "fd@${clear_good_tcp}"
+        server s1 "${VTC_SOCK_TYPE}+${h1_ssl_tcp_sock}" ssl verify none crt client_good.pem
+
+    # This frontend never denies the request by itself, the OCSP status and
+    # error reason are only exposed through variables.
+    frontend ssl-nodeny-fe
+        bind "${VTC_SOCK_TYPE}+fd@${ssl_nodeny}" ssl crt server.pem ca-file "${testdir}/certs/ocsp_client_check/ca/ocsp_client_check_ca.crt" verify optional
+
+        http-request wait-for-ocsp status-var txn.ocsp_status reason-var txn.ocsp_reason no-deny
+        http-request return status 200
+
+        # "http-after-response" is used instead of "http-request return"
+        # header directives because the latter does not emit headers that
+        # have an empty value, while the OCSP reason is expected to be an
+        # empty string when the check succeeded. It also allows to expose
+        # the OCSP information on the responses denied by the action.
+        http-after-response set-header x-ocsp-status "%[var(txn.ocsp_status)]"
+        http-after-response set-header x-ocsp-reason "%[var(txn.ocsp_reason)]"
+
+    # This frontend relies on the default behaviour of the action, which is to
+    # deny the request when the OCSP status is not "good".
+    frontend ssl-deny-fe
+        bind "${VTC_SOCK_TYPE}+fd@${ssl_deny}" ssl crt server.pem ca-file "${testdir}/certs/ocsp_client_check/ca/ocsp_client_check_ca.crt" verify optional
+
+        http-request wait-for-ocsp status-var txn.ocsp_status reason-var txn.ocsp_reason deny
+        http-request return status 200
+
+        # "http-after-response" is used instead of "http-request return"
+        # header directives because the latter does not emit headers that
+        # have an empty value, while the OCSP reason is expected to be an
+        # empty string when the check succeeded. It also allows to expose
+        # the OCSP information on the responses denied by the action.
+        http-after-response set-header x-ocsp-status "%[var(txn.ocsp_status)]"
+        http-after-response set-header x-ocsp-reason "%[var(txn.ocsp_reason)]"
+
+    # Same check, performed by a "tcp-request content" rule instead.
+    frontend ssl-tcp-fe
+        bind "${VTC_SOCK_TYPE}+fd@${ssl_tcp}" ssl crt server.pem ca-file "${testdir}/certs/ocsp_client_check/ca/ocsp_client_check_ca.crt" verify optional
+
+        tcp-request inspect-delay 5s
+        tcp-request content wait-for-ocsp status-var txn.ocsp_status reason-var txn.ocsp_reason no-deny
+
+        http-request return status 200
+
+        # "http-after-response" is used instead of "http-request return"
+        # header directives because the latter does not emit headers that
+        # have an empty value, while the OCSP reason is expected to be an
+        # empty string when the check succeeded. It also allows to expose
+        # the OCSP information on the responses denied by the action.
+        http-after-response set-header x-ocsp-status "%[var(txn.ocsp_status)]"
+        http-after-response set-header x-ocsp-reason "%[var(txn.ocsp_reason)]"
+} -start
+
+
+# Valid client certificate, the OCSP responder answers "good".
+client c1 -connect ${h1_clear_good_nodeny_sock} {
+    txreq
+    rxresp
+    expect resp.status == 200
+    expect resp.http.x-ocsp-status == "good"
+    expect resp.http.x-ocsp-reason == ""
+} -run
+
+# Revoked client certificate. Since the "no-deny" option is used the request is
+# not rejected, the status is only reported in the variable.
+client c1 -connect ${h1_clear_revoked_nodeny_sock} {
+    txreq
+    rxresp
+    expect resp.status == 200
+    expect resp.http.x-ocsp-status == "revoked"
+} -run
+
+# The client certificate has no OCSP URI, no check can be performed.
+client c1 -connect ${h1_clear_noocsp_nodeny_sock} {
+    txreq
+    rxresp
+    expect resp.status == 200
+    expect resp.http.x-ocsp-status == "inapplicable"
+    expect resp.http.x-ocsp-reason == ""
+} -run
+
+# No client certificate at all, no check can be performed either.
+client c1 -connect ${h1_clear_nocert_nodeny_sock} {
+    txreq
+    rxresp
+    expect resp.status == 200
+    expect resp.http.x-ocsp-status == "inapplicable"
+    expect resp.http.x-ocsp-reason == ""
+} -run
+
+# Valid client certificate on the frontend that denies on error, the request
+# must go through.
+client c1 -connect ${h1_clear_good_deny_sock} {
+    txreq
+    rxresp
+    expect resp.status == 200
+    expect resp.http.x-ocsp-status == "good"
+} -run
+
+# Revoked client certificate on the frontend that denies on error, the request
+# must be rejected.
+client c1 -connect ${h1_clear_revoked_deny_sock} {
+    txreq
+    rxresp
+    expect resp.status == 403
+    expect resp.http.x-ocsp-status == "revoked"
+} -run
+
+# Same check performed through a "tcp-request content" rule.
+client c1 -connect ${h1_clear_good_tcp_sock} {
+    txreq
+    rxresp
+    expect resp.status == 200
+    expect resp.http.x-ocsp-status == "good"
+} -run
+
+# The responder should have answered all the expected requests by now.
+process p1 -wait -expect-exit 0
+
+# The OCSP responder is not running anymore, the check cannot be performed. The
+# request is not denied thanks to the "no-deny" option but the status is not
+# "good" and the reason is filled.
+client c1 -connect ${h1_clear_good_nodeny_sock} {
+    txreq
+    rxresp
+    expect resp.status == 200
+    expect resp.http.x-ocsp-status == "unknown"
+    expect resp.http.x-ocsp-reason != ""
+} -run
+
+# Same case on the frontend that denies on error.
+client c1 -connect ${h1_clear_good_deny_sock} {
+    txreq
+    rxresp
+    expect resp.status == 403
+    expect resp.http.x-ocsp-status == "unknown"
+    expect resp.http.x-ocsp-reason != ""
+} -run
+
+haproxy h1 -wait
