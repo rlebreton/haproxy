@@ -2137,6 +2137,7 @@ static enum act_return ocsp_action_wait_for_ocsp(struct act_rule *rule, struct p
         SSL *ssl;
 	int ret = 0;
 	int retval = ACT_RET_CONT;
+	struct ocsp_clt_check_ctx **ctx = (struct ocsp_clt_check_ctx **)&rule->arg.act.p[0];
 	struct ocsp_check_conf *conf = rule->arg.act.p[1];
 
 	if (flags & ACT_OPT_FINAL)
@@ -2146,33 +2147,30 @@ static enum act_return ocsp_action_wait_for_ocsp(struct act_rule *rule, struct p
 		s->req.analyse_exp = tick_add_ifset(now_ms, s->be->timeout.httpreq);
 
 	if (tick_is_expired(s->req.analyse_exp, now_ms)) {
-		struct ocsp_clt_check_ctx *ctx = rule->arg.act.p[0];
-		if (ctx && !ctx->ocsp_error)
-			ctx->ocsp_error = OCSP_CHECK_ERR_TIMEOUT;
+		if (*ctx && !(*ctx)->ocsp_error)
+			(*ctx)->ocsp_error = OCSP_CHECK_ERR_TIMEOUT;
 		ret = -1;
 	} else {
 		conn = objt_conn(sess->origin);
 		ssl = ssl_sock_get_ssl_object(conn);
 
-		ret = ssl_ocsp_check_client_cert(s->task, ssl, (struct ocsp_clt_check_ctx **)&rule->arg.act.p[0], s->be->timeout.httpreq);
+		ret = ssl_ocsp_check_client_cert(s->task, ssl, ctx, s->be->timeout.httpreq);
 	}
-	if (ret == -1) {
-		/* error */
-	} else if (ret == 1) {
+
+	if (ret == 1)
 		/* yield and come back to process ocsp response later */
 		return ACT_RET_YIELD;
-	} else {
-		/* Nothing to do ? */
-	}
+
 	ssl_ocsp_set_status_var(rule->arg.act.p[0], conf, sess, s);
 
-	if (ret && conf->deny != OCSP_ACT_NO_DENY) {
+	if (conf->deny != OCSP_ACT_NO_DENY &&
+	    ((ret) || ((*ctx)->state != OCSP_CLT_NO_OCSP &&
+		       (*ctx)->ocsp_status != V_OCSP_CERTSTATUS_GOOD)))
 		retval = ACT_RET_DENY;
-	}
 
 end:
-	clear_ocsp_clt_check_ctx((struct ocsp_clt_check_ctx**)&rule->arg.act.p[0]);
-	ha_free(&rule->arg.act.p[0]);
+	clear_ocsp_clt_check_ctx(ctx);
+	ha_free(ctx);
 	return retval;
 }
 
