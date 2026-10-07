@@ -25,12 +25,12 @@ haproxy h1 -conf {
         mode http
         option httplog
         log stderr local0 debug err
-        timeout connect "${HAPROXY_TEST_TIMEOUT-5s}"
-        timeout client  "${HAPROXY_TEST_TIMEOUT-5s}"
-        timeout server  "${HAPROXY_TEST_TIMEOUT-5s}"
+        timeout connect "${HAPROXY_TEST_TIMEOUT-1s}"
+        timeout client  "${HAPROXY_TEST_TIMEOUT-1s}"
+        timeout server  "${HAPROXY_TEST_TIMEOUT-1s}"
         # The 'do-ocsp-request' action uses the http-request timeout as a limit
         # for the whole OCSP request/response process.
-        timeout http-request "${HAPROXY_TEST_TIMEOUT-5s}"
+        timeout http-request "${HAPROXY_TEST_TIMEOUT-500ms}"
 
     # Clear listeners used to build TLS connections that present the various
     # client certificates to the SSL frontends.
@@ -101,7 +101,7 @@ client c1 -connect ${h1_clear_good_sock} {
 
 # Revoked client certificate. The action does not reject the request, the
 # status is only reported in the variable.
-client c1 -connect ${h1_clear_revoked_sock} {
+client c2 -connect ${h1_clear_revoked_sock} {
     txreq
     rxresp
     expect resp.status == 200
@@ -109,7 +109,7 @@ client c1 -connect ${h1_clear_revoked_sock} {
 } -run
 
 # The client certificate has no OCSP URI, no check can be performed.
-client c1 -connect ${h1_clear_noocsp_sock} {
+client c3 -connect ${h1_clear_noocsp_sock} {
     txreq
     rxresp
     expect resp.status == 200
@@ -118,7 +118,7 @@ client c1 -connect ${h1_clear_noocsp_sock} {
 } -run
 
 # No client certificate at all, no check can be performed either.
-client c1 -connect ${h1_clear_nocert_sock} {
+client c4 -connect ${h1_clear_nocert_sock} {
     txreq
     rxresp
     expect resp.status == 200
@@ -127,7 +127,7 @@ client c1 -connect ${h1_clear_nocert_sock} {
 } -run
 
 # Same check performed through a "tcp-request content" rule.
-client c1 -connect ${h1_clear_good_tcp_sock} {
+client c5 -connect ${h1_clear_good_tcp_sock} {
     txreq
     rxresp
     expect resp.status == 200
@@ -141,7 +141,7 @@ process p1 -wait -expect-exit 0
 # The OCSP responder is not running anymore, the check cannot be performed. The
 # request is still not denied but the status is not "good", the error code is
 # non-zero and the converted reason is filled.
-client c1 -connect ${h1_clear_good_sock} {
+client c6 -connect ${h1_clear_good_sock} {
     txreq
     rxresp
     expect resp.status == 200
