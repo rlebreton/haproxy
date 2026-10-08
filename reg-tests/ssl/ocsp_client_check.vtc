@@ -1,4 +1,4 @@
-#REGTEST_TYPE=slow
+#REGTEST_TYPE=devel
 
 # This reg-test focuses on the 'do-ocsp-request' action which performs an OCSP
 # check on the certificate presented by the client during the TLS handshake.

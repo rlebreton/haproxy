@@ -1,0 +1,16 @@
+#REGTEST_TYPE=slow
+
+# This reg-test focuses on the 'do-ocsp-request' action which performs an OCSP
+# check on the certificate presented by the client during the TLS handshake.
+#
+# The functional tests are in ocsp_client_check.vtc, this test will only check
+# that when an OCSP responder is not found, the action does follow the
+# http-request timeout and raises the proper status.
+
+varnishtest "Test the 'do-ocsp-request' action"
+feature cmd "$HAPROXY_PROGRAM -cc 'version_atleast(3.5-dev0)'"
+feature cmd "$HAPROXY_PROGRAM -cc 'feature(OPENSSL) && !ssllib_name_startswith(BoringSSL) && !ssllib_name_startswith(LibreSSL) && openssl_version_atleast(1.1.1)'"
+feature cmd "command -v openssl"
+
+setenv VTC_SOCK_TYPE stream
+include ${testdir}/ocsp_client_check_timeout.vtci

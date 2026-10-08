@@ -138,16 +138,4 @@ client c5 -connect ${h1_clear_good_tcp_sock} {
 # The responder should have answered all the expected requests by now.
 process p1 -wait -expect-exit 0
 
-# The OCSP responder is not running anymore, the check cannot be performed. The
-# request is still not denied but the status is not "good", the error code is
-# non-zero and the converted reason is filled.
-client c6 -connect ${h1_clear_good_sock} {
-    txreq
-    rxresp
-    expect resp.status == 200
-    expect resp.http.x-ocsp-status == "unknown"
-    expect resp.http.x-ocsp-error ~ "^[1-9][0-9]*$"
-    expect resp.http.x-ocsp-reason != ""
-} -run
-
 haproxy h1 -wait

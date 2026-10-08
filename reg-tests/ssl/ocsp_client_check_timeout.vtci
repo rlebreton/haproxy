@@ -1,0 +1,65 @@
+feature ignore_unknown_macro
+
+# We don't need any OCSP responder since we will check what happens when the
+# responder is unresponsive
+
+haproxy h1 -conf {
+    global
+    .if feature(THREAD)
+        thread-groups 1
+    .endif
+
+        stats socket "${tmpdir}/h1/stats" level admin
+        # The issuer of the client certificates must be known in order to be
+        # able to build the OCSP request and to check the OCSP response's
+        # signature.
+        issuers-chain-path "${testdir}/certs/ocsp_client_check/ca/"
+        crt-base "${testdir}/certs/ocsp_client_check"
+
+    defaults
+        mode http
+        option httplog
+        log stderr local0 debug err
+        timeout connect "${HAPROXY_TEST_TIMEOUT-1s}"
+        timeout client  "${HAPROXY_TEST_TIMEOUT-1s}"
+        timeout server  "${HAPROXY_TEST_TIMEOUT-1s}"
+        # The 'do-ocsp-request' action uses the http-request timeout as a limit
+        # for the whole OCSP request/response process.
+        timeout http-request "${HAPROXY_TEST_TIMEOUT-50ms}"
+
+    listen clear-good-lst
+        bind "fd@${clear_good}"
+        server s1 "${VTC_SOCK_TYPE}+${h1_ssl_sock}" ssl verify none crt client_good.pem
+
+    # The action never denies the request by itself, the OCSP status and error
+    # reason are only exposed through variables. It is up to the configuration
+    # to decide what to do with them.
+    frontend ssl-fe
+        bind "${VTC_SOCK_TYPE}+fd@${ssl}" ssl crt server.pem ca-file "${testdir}/certs/ocsp_client_check/ca/ocsp_client_check_ca.crt" verify optional
+
+        http-request do-ocsp-request status-var txn.ocsp_status reason-var txn.ocsp_reason
+        http-request return status 200
+
+        # "http-after-response" is used instead of "http-request return"
+        # header directives because the latter does not emit headers that
+        # have an empty value, while the converted OCSP reason is expected
+        # to be an empty string when the error code is 0.
+        http-after-response set-header x-ocsp-status "%[var(txn.ocsp_status)]"
+        http-after-response set-header x-ocsp-error "%[var(txn.ocsp_reason)]"
+        http-after-response set-header x-ocsp-reason "%[var(txn.ocsp_reason),ocsp_check_err_str]"
+
+} -start
+
+# The OCSP responder is not running anymore, the check cannot be performed. The
+# request is still not denied but the status is not "good", the error code is
+# non-zero and the converted reason is filled.
+client c1 -connect ${h1_clear_good_sock} {
+    txreq
+    rxresp
+    expect resp.status == 200
+    expect resp.http.x-ocsp-status == "unknown"
+    expect resp.http.x-ocsp-error == "11"
+    expect resp.http.x-ocsp-reason == "Timeout"
+} -run
+
+haproxy h1 -wait
