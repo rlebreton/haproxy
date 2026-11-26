@@ -224,6 +224,7 @@ int jwt_tree_create_entry_from_store(struct ckch_store *store, char **err)
 	return retval;
 }
 
+
 /*
  * Release the keys held by the JWT tree entry matching <path> but keep the
  * entry itself in the tree. This is used when the "jwt" option is disabled on
